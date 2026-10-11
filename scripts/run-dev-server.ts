@@ -17,7 +17,7 @@ import {
 import { spawn, type ChildProcess } from "node:child_process";
 import { connect } from "node:net";
 import { constants } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { resolveBinEntry } from "./bin-entry.ts";
@@ -507,7 +507,9 @@ for (const gk of gatekeepers) {
   const config = parse(readFileSync(srcPath, "utf8"));
   config.build = devBuildConfig(config.build, gk.dir);
   config.vars = config.vars || {};
-  config.vars.BASE_URL = `http://${backendHost}/gatekeeper/${gk.name.slice("gatekeeper-".length)}`;
+  const publicBaseUrl = process.env.PUBLIC_BASE_URL?.trim() || `http://${backendHost}`;
+  config.vars.BASE_URL = new URL(
+      `/gatekeeper/${gk.name.slice("gatekeeper-".length)}`, publicBaseUrl).toString().replace(/\/$/, "");
 
   const shared = SHARED_GATEKEEPER_CREDS[gk.name];
   if (shared && process.env[shared.id] && process.env[shared.secret]) {
@@ -538,9 +540,13 @@ for (const gk of gatekeepers) {
 
   config.services = config.services || [];
 
-  // For local testing, create an account named "admin" to test admin features.
+  // Require the operator to choose the admin identity explicitly; never grant an unclaimed default.
   config.vars = config.vars || {};
-  config.vars.ADMINS = ["admin"];
+  const adminUsername = process.env.CLOUDFLARE_OS_ADMIN_USERNAME?.trim();
+  if (!adminUsername) {
+    throw new Error("CLOUDFLARE_OS_ADMIN_USERNAME must name the explicit deployment admin.");
+  }
+  config.vars.ADMINS = [adminUsername];
 
   // Pass through the optional OAuth sign-in / AI Gateway billing env vars from the shell
   // environment, so you can run e.g.
@@ -628,6 +634,13 @@ if (wranglerPort) {
       "VITE_BACKEND_HOST did not include a port, so run-dev-server.ts could not derive " +
       "a Wrangler --port override.");
 }
+const persistTo = process.env.CLOUDFLARE_OS_STATE_DIR?.trim();
+if (!persistTo || !isAbsolute(persistTo)) {
+  throw new Error("CLOUDFLARE_OS_STATE_DIR must be an absolute path.");
+}
+args.push("--ip", "127.0.0.1");
+args.push("--log-level", "warn");
+args.push("--persist-to", persistTo);
 console.log(`\nStarting: wrangler dev ${args.join(" ")}\n`);
 
 // Reached directly for the same reason the generated custom builds are; falls back to `pnpm exec` if
