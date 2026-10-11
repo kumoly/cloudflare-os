@@ -1,0 +1,29 @@
+name: CFOS checks
+
+on:
+  push:
+    branches: ['cfos/**', 'feat/**', 'fix/**', 'chore/**', 'sync/**', 'release/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  downstream:
+    name: CFOS branch and release checks
+    if: github.repository == 'kumoly/cloudflare-os'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Configure read-only upstream
+        run: |
+          git remote add upstream https://github.com/cloudflare/cloudflare-os.git
+          git remote set-url --push upstream DISABLED
+      - name: Test branch and release guards
+        run: node --test scripts/cfos.test.mjs
+      - name: Check downstream lineage and remotes
+        run: node scripts/cfos.mjs verify --publish --detached
