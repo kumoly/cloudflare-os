@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "upstream": "cloudflare/cloudflare-os",
+  "fork": "kumoly/cloudflare-os",
+  "upstreamBase": "33a5b70cc45e210b9aada8b5a1d61013528f4e5f",
+  "integrationBranch": "cfos/main",
+  "compatibilityCommits": [
+    {
+      "name": "macos-runtime",
+      "category": "compatibility",
+      "commit": "269b49064b1d363fffc529b8556af00edf53f7eb"
+    },
+    {
+      "name": "openai-api-format",
+      "category": "compatibility",
+      "commit": "910d29c24c7fd4454d27279e0576eb0f5da021e1"
+    },
+    {
+      "name": "custom-gateway-cache",
+      "category": "compatibility",
+      "commit": "6e77702eaaa306905c1ab6cfb635a83452e80384"
+    }
+  ],
+  "requiredChecks": [
+    "Lint",
+    "Build and test",
+    "CFOS branch and release checks"
+  ],
+  "deployment": "immutable source commit plus release manifest; isolated acceptance before promotion"
+}

@@ -1,5 +1,11 @@
 This project is building a platform for "vibe coded" personal applications and AI agents that run inside a strong sandbox.
 
+CFOS downstream development follows `docs/cfos-development.md` and `.cfos/stack.json`.
+Use the personal fork as `origin`, keep `upstream` push-disabled, and implement changes in
+feature worktrees based on `cfos/main`. Never implement a feature in the running service
+checkout. Preserve upstream and published downstream history; do not force-push shared
+branches or replace release tags. Run the CFOS guard and the required checks before publishing.
+
 The following files are commonly important to reference:
 
 * packages/workshop-shared/node_modules/capnweb/README.md: Explains how to use Cap'n Web RPC, which is used extensively for client-server communications.

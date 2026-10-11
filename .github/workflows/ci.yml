@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+      - 'cfos/**'
+      - 'feat/**'
+      - 'fix/**'
+      - 'chore/**'
+      - 'sync/**'
+      - 'release/**'
   pull_request:
 
 permissions:
