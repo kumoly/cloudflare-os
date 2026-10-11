@@ -1753,6 +1753,9 @@ export type AiModelConfig = {
    */
   apiUrl?: string;
 
+  /** Wire format for OpenAI-compatible endpoints. Defaults to Responses. */
+  openaiApi?: "responses" | "chat-completions";
+
   /**
    * Additional HTTP headers to send with every request to the provider, keyed by header name.
    * These override the provider's default headers of the same name (including authentication

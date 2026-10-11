@@ -125,6 +125,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const [apiToken, setApiToken] = useState<string | null>(source ? source.config.apiToken : '')
   const [accountId, setAccountId] = useState(source?.config.accountId ?? '')
   const [apiUrl, setApiUrl] = useState(source?.config.apiUrl ?? '')
+  const [openaiApi, setOpenaiApi] = useState(source?.config.openaiApi ?? 'responses')
   const [headerRows, setHeaderRows] = useState<HeaderRow[]>(() => headerRowsFromRecord(source?.config.extraHeaders))
   // Token limits are specific to a model, so a clone doesn't inherit them.
   const [contextWindow, setContextWindow] = useState(editing ? String(source!.config.contextWindow ?? '') : '')
@@ -157,6 +158,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       setApiToken('')
       setAccountId('')
       setApiUrl('')
+      setOpenaiApi('responses')
       setHeaderRows([])
       setContextWindow('')
       setOutputLimit('')
@@ -268,6 +270,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         apiToken: gatewayMode ? '' : effectiveApiToken?.trim() ?? null,
         ...(!gatewayMode && accountId.trim() && { accountId: accountId.trim() }),
         ...(!gatewayMode && apiUrl.trim() && { apiUrl: apiUrl.trim() }),
+        ...(selection!.provider === 'openai' && openaiApi !== 'responses' && { openaiApi }),
         ...(extraHeaders && { extraHeaders }),
         ...(contextWindowTokens && { contextWindow: contextWindowTokens }),
         ...(outputLimitTokens && { outputLimit: outputLimitTokens }),
@@ -448,6 +451,21 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                       value={apiUrl}
                       onChange={(e) => setApiUrl(e.target.value)}
                     />
+                  )}
+                  {showCredentials && selection?.provider === 'openai' && (
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium">API format</label>
+                      <Select<'responses' | 'chat-completions'>
+                        aria-label="OpenAI API format"
+                        value={openaiApi}
+                        onValueChange={(value, { reason }) => {
+                          if (reason === 'item-press' && value) setOpenaiApi(value)
+                        }}
+                      >
+                        <Select.Option value="responses">Responses</Select.Option>
+                        <Select.Option value="chat-completions">Chat Completions</Select.Option>
+                      </Select>
+                    </div>
                   )}
                   {showCredentials && (
                     <ExtraHeadersEditor
