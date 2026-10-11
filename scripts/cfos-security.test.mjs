@@ -76,6 +76,12 @@ test('commit messages are scanned for secrets', t => {
   f.git('commit', '--allow-empty', '-qm', canary());
   assert.throws(f.audit, /secret-or-pii/);
 });
+test('credentials and email addresses in filenames are blocked', t => {
+  const f = fixture(t);
+  f.add(`src/${canary()}.txt`, 'safe content');
+  assert.throws(f.audit, /secret-or-pii/);
+  assert.equal(forbiddenPath(['src/contact', 'example.invalid.txt'].join('@')), true);
+});
 test('machine-specific user paths are blocked', t => {
   const f = fixture(t);
   f.add('src/local.json', JSON.stringify({ path: ['', 'Users', 'synthetic-owner', 'config'].join('/') }));
