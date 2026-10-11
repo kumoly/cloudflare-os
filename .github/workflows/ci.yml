@@ -1,12 +1,14 @@
 name: CI
 
 on:
+  push:
+    branches: ['cfos/**', 'feat/**', 'fix/**', 'chore/**', 'sync/**', 'release/**']
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Optional manual runs share a queue per branch.
+# One push run per branch commit; superseded commits share a queue.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
   cancel-in-progress: ${{ github.ref_name != 'cfos/main' && github.ref_name != 'main' }}
@@ -15,12 +17,44 @@ env:
   NODE_VERSION: "24.19.0"
 
 jobs:
+  privacy:
+    name: CFOS privacy checks
+    if: github.repository == 'kumoly/cloudflare-os' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch official upstream
+        run: |
+          git remote add upstream https://github.com/cloudflare/cloudflare-os.git
+          git remote set-url --push upstream DISABLED
+          git fetch --no-tags upstream main
+      - name: Install pinned privacy scanner
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz --output "$RUNNER_TEMP/gitleaks.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --status
+          mkdir "$RUNNER_TEMP/cfos-scanner"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/cfos-scanner" gitleaks
+          echo "$RUNNER_TEMP/cfos-scanner" >> "$GITHUB_PATH"
+      - name: Test publication, identity and filesystem guards
+        run: node --test scripts/cfos.test.mjs scripts/cfos-local.test.mjs scripts/cfos-security.test.mjs
+      - name: Verify downstream history and repository
+        run: node scripts/cfos.mjs verify --publish --detached
+      - name: Scan publication content and commit metadata
+        run: node scripts/cfos-security.mjs
+
   # Parallel to `test` so lint, type and test failures surface on the same run. The package type
   # check (`pnpm build`) runs here rather than ahead of the tests, which do not need it: each test
   # task declares the codegen it reads. `scripts/` has its own type check, kept off `pnpm build`'s
   # hot path (see docs/build-system.md).
   lint:
     name: Lint
+    needs: privacy
     runs-on: ubuntu-latest
     # A wedged build would otherwise burn the 6-hour default, as `test` notes below.
     timeout-minutes: 10
@@ -66,6 +100,7 @@ jobs:
   # The three slowest test tasks each get a runner, and every other package shares one. Each leg runs
   # the root `test` script's command (package.json) with its own filters; keep the two in step.
   test:
+    needs: privacy
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
     # Without an explicit cap a wedged test process (a spawned child that outlives its reap keeps
@@ -118,6 +153,13 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: false
           run-install: true
+
+      # Exercise the real local PDF backend with generated synthetic documents.
+      - name: Install PDF execution tools
+        if: ${{ matrix.name == 'other packages' }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-jpn
 
       # The frontend's browser suite (`vitest.browser.config.ts`) runs in Chromium, which
       # Playwright downloads outside node_modules; `--with-deps` adds the system libraries it needs.

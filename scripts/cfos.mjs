@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { auditSecurity } from './cfos-security.mjs';
 
 const official = 'cloudflare/cloudflare-os';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -124,6 +125,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       if (args.length !== 2) throw new Error('Expected Git remote name and URL.');
       const errors = pushViolations(report, args[0], args[1], readFileSync(0, 'utf8'), (a, b) => optionalGit(report.root, 'merge-base', '--is-ancestor', a, b) !== null);
       if (errors.length) throw new Error(errors.join('\n'));
+      const privacy = auditSecurity({ root: report.root });
+      console.log(`CFOS publication privacy passed: ${privacy.commits} downstream commits.`);
     } else throw new Error('Usage: node scripts/cfos.mjs status|verify|manifest|pre-push');
   } catch (error) {
     console.error(error.message);

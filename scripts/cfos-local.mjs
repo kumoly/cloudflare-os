@@ -169,7 +169,7 @@ async function main() {
       }
       changes = planChanges(app, previous, target);
       mode = changeMode(changes.map(item => item.path));
-      console.log(JSON.stringify({ channel: 'local-dev', sourceCommit: sourceReport.commit, mode, files: changes.map(item => item.path), fullCI: 'optional-manual' }, null, 2));
+      console.log(JSON.stringify({ channel: 'local-dev', sourceCommit: sourceReport.commit, mode, files: changes.map(item => item.path), fullCI: 'public-background' }, null, 2));
       if (operation === 'plan') return;
       if (mode === 'full-update') throw new Error('Dependency, toolchain or storage changes require the full backed-up deployment procedure.');
       if (mode !== 'source-only' && (!values['state-compatible'] || !values.check.length || !values.accept.length)) throw new Error('Runtime changes require --state-compatible, a focused --check and a feature --accept.');
@@ -219,7 +219,7 @@ async function main() {
     planChanges(app, target, target);
     const receipt = { schemaVersion: 1, channel: 'local-dev', sourceCommit: sourceReport.commit, sourceTree: sourceReport.tree, mode, files: target,
       rollbackDirectory: runDir, checkCommands: values.check, acceptanceCommands: values.accept, completedAt: new Date().toISOString(),
-      seconds: (Date.now() - started) / 1000, smoke: 'passed', featureAcceptance: values.accept.length ? 'passed' : 'not-applicable', fullCI: 'optional-manual', stableRelease: false };
+      seconds: (Date.now() - started) / 1000, smoke: 'passed', featureAcceptance: values.accept.length ? 'passed' : 'not-applicable', fullCI: 'public-background', stableRelease: false };
     saveJson(statePath, receipt);
     saveJson(resolve(runDir, 'result.json'), receipt);
     console.log(`Local CFOS updated: ${sourceReport.commit.slice(0, 8)}; ${receipt.seconds}s; ${mode}; smoke passed.`);

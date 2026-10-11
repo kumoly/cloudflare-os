@@ -1,0 +1,49 @@
+title = "CFOS publication privacy policy"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "cfos-private-email"
+description = "Personal email addresses are private; use reserved examples or GitHub noreply"
+regex = '''(?i)(?:^|[^a-z0-9._%+\-/])([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})'''
+secretGroup = 1
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''(?i)^(?:[^@]+@users\.noreply\.github\.com|noreply@github\.com|git@github\.com)$''', '''(?i)^[^@]+@(?:[a-z0-9.-]+\.)?(?:example\.(?:com|net|org)|example|invalid|test)$''']
+
+[[rules]]
+id = "cfos-credential-literal"
+description = "Literal runtime credentials must not enter public source"
+regex = '''(?i)(?:password|client[_-]?secret|api[_-]?key|access[_-]?token)\s*["']?\s*[:=]\s*["']([a-z0-9+/=_-]{8,})["']'''
+secretGroup = 1
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''(?i)^(?:redacted|placeholder|example|changeme|your[_-].*)$''']
+
+[[rules]]
+id = "cfos-phone-literal"
+description = "Contact phone values require synthetic examples"
+regex = '''(?i)(?:phone|mobile|telephone)\s*["']?\s*[:=]\s*["'](\+?[0-9][0-9 ().-]{7,}[0-9])["']'''
+secretGroup = 1
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^\+?1?[ ().-]*202[ ().-]*555[ ().-]*01[0-9]{2}$''']
+
+[[rules]]
+id = "cfos-contact-literal"
+description = "Identity/contact test fields must use explicitly synthetic values"
+regex = '''(?i)(?:full[_-]?name|home[_-]?address|date[_-]?of[_-]?birth|passport[_-]?number|ssn)\s*["']?\s*[:=]\s*["']([^"'\r\n]{3,})["']'''
+secretGroup = 1
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''(?i)^(?:example|test|synthetic|placeholder|redacted)(?:[ _-].*)?$''']
+
+[[rules]]
+id = "cfos-local-user-path"
+description = "Machine-specific home paths belong in private host configuration"
+regex = '''(?i)(?:/Users/|/home/|[a-z]:\\Users\\)([a-z0-9_.-]+)'''
+secretGroup = 1
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''(?i)^(?:example|test|placeholder|user)$''']
