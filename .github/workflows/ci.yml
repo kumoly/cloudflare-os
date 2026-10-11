@@ -15,6 +15,11 @@ on:
 permissions:
   contents: read
 
+# Push and PR events for one branch share a queue; only the newest feature run is useful.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref_name != 'cfos/main' && github.ref_name != 'main' }}
+
 env:
   NODE_VERSION: "24.19.0"
 
