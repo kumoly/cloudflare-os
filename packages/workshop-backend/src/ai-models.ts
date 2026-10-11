@@ -777,8 +777,10 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           cost: catalog?.cost ?? ZERO_COST,
           ...window,
           thinkingLevelMap: catalog?.thinkingLevelMap,
-          // Catalog compat verbatim -- see the gateway-path comment on forceAdaptiveThinking.
-          compat: catalog?.compat,
+          // Custom gateways can insert cache breakpoints, so keep one cache lifetime throughout.
+          compat: config.apiUrl && stripTrailingSlashes(config.apiUrl) !== "https://api.anthropic.com"
+              ? { ...catalog?.compat, supportsLongCacheRetention: false }
+              : catalog?.compat,
         },
         ...directAuth(config, "x-api-key"),
         sessionAffinity,
@@ -884,7 +886,11 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           cost: catalog?.cost ?? ZERO_COST,
           ...window,
           thinkingLevelMap: catalog?.thinkingLevelMap,
-          compat: catalog?.compat,
+          // Custom gateways may reject provider-specific cache extensions. Use their baseline
+          // Responses format while preserving catalog behavior for the default OpenAI endpoint.
+          compat: config.apiUrl
+              ? { ...catalog?.compat, supportsExplicitPromptCacheMode: false }
+              : catalog?.compat,
         },
         ...directAuth(config, "Authorization"),
         sessionAffinity,

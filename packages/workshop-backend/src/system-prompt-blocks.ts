@@ -1,5 +1,5 @@
 import { contentText, getInitialSystemMessage } from "@earendil-works/pi-ai";
-import type { Api, Context, Model } from "@earendil-works/pi-ai";
+import type { AnthropicMessagesCompat, Api, Context, Model } from "@earendil-works/pi-ai";
 
 // The leading system prompt as a static and a dynamic block, for prompt caching.
 //
@@ -38,7 +38,9 @@ export function splitSystemPrompt(
   const staticText = leading ? contentText(leading.content) : "";
   if (staticText === "" || typeof payload !== "object" || payload === null) return undefined;
   switch (model.api) {
-    case "anthropic-messages": return splitAnthropicSystem(payload, staticText);
+    case "anthropic-messages":
+      return splitAnthropicSystem(payload, staticText,
+          (model.compat as AnthropicMessagesCompat | undefined)?.supportsLongCacheRetention !== false);
     case "openai-responses":
       return hasGpt56PromptCaching(model)
           ? splitOpenAiResponsesInstructions(payload, staticText)
@@ -59,7 +61,8 @@ export function hasGpt56PromptCaching(model: Model<Api>): boolean {
       compat.supportsExplicitPromptCacheMode === true;
 }
 
-function splitAnthropicSystem(payload: object, staticText: string): object | undefined {
+function splitAnthropicSystem(payload: object, staticText: string, longCache: boolean)
+    : object | undefined {
   if (!("system" in payload) || !Array.isArray(payload.system)) return undefined;
   const system: unknown[] = payload.system;
   // The prompt is the last block (OAuth requests put an identity block before it), and carries
@@ -70,16 +73,18 @@ function splitAnthropicSystem(payload: object, staticText: string): object | und
     return undefined;
   }
   const { cache_control, ...block } = prompt;
+  // Preserve pi's uniform lifetime when the transport does not support the longer head cache.
+  const cacheHead = (value: unknown) => longCache ? cachedForAnHour(value) : value;
   // Anthropic requires every 1-hour breakpoint to come before any 5-minute one, so all of the
   // head's breakpoints change together.
   return {
     ...payload,
     ...("tools" in payload && Array.isArray(payload.tools)
-        ? { tools: payload.tools.map(cachedForAnHour) }
+        ? { tools: payload.tools.map(cacheHead) }
         : {}),
     system: [
-      ...system.slice(0, -1).map(cachedForAnHour),
-      cachedForAnHour({ ...block, text: staticText, cache_control }),
+      ...system.slice(0, -1).map(cacheHead),
+      cacheHead({ ...block, text: staticText, cache_control }),
       { ...block, text: prompt.text.slice(staticText.length) },
     ],
   };
