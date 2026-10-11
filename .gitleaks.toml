@@ -15,7 +15,7 @@ regexes = ['''(?i)^(?:[^@]+@users\.noreply\.github\.com|noreply@github\.com|git@
 [[rules]]
 id = "cfos-credential-literal"
 description = "Literal runtime credentials must not enter public source"
-regex = '''(?i)(?:password|client[_-]?secret|api[_-]?key|access[_-]?token)\s*["']?\s*[:=]\s*["']([a-z0-9+/=_-]{8,})["']'''
+regex = '''(?i)(?:password|client[_-]?secret|api[_-]?key|access[_-]?token)\s*["']?\s*[:=]\s*["']([^"'\r\n]{1,})["']'''
 secretGroup = 1
 [[rules.allowlists]]
 regexTarget = "secret"
