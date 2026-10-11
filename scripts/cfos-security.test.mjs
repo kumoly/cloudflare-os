@@ -89,7 +89,7 @@ test('machine-specific user paths are blocked', t => {
 });
 test('JSON credential literals and contact fields are blocked', t => {
   const f = fixture(t);
-  f.add('src/contact.json', JSON.stringify({ password: ['runtime', 'canary', 'value'].join('-'), full_name: ['Synthetic', 'Person'].join(' '), phone: ['+44', '20', '7946', '1234'].join(' ') }));
+  f.add('src/contact.json', JSON.stringify({ password: ['runtime', 'canary', 'value'].join('-'), full_name: ['Synthetic', 'Person'].join(' '), phone: ['+1', '203', '555', '0101'].join(' ') }));
   assert.throws(f.audit, /cfos-credential-literal|cfos-phone-literal/);
 });
 test('encoded credentials are scanned and failed scanners remain fail closed', t => {
