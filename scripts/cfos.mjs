@@ -78,6 +78,9 @@ export function pushViolations(report, remoteName, remoteUrl, refLines, isAncest
     if (remoteRef === 'refs/heads/main') failures.push('Do not push main; sync the fork mirror from upstream.');
     if (!/^refs\/(heads\/(cfos\/main|feat\/.+|fix\/.+|chore\/.+|sync\/.+|release\/.+)|tags\/cfos-v.+)$/.test(remoteRef ?? '')) failures.push('Unexpected push ref.');
     if (/^0+$/.test(localSha ?? '')) failures.push('Deleting remote refs requires a separate reviewed operation.');
+    if (!isAncestor(report.commit, localSha) || !isAncestor(localSha, report.commit)) failures.push('Push the checked HEAD revision; check out other branches before publishing them.');
+    if (!isAncestor(report.config.upstreamBase, localSha)) failures.push('The pushed revision must include the pinned upstream base.');
+    if (report.config.compatibilityCommits.some(entry => !isAncestor(entry.commit, localSha))) failures.push('The pushed revision is missing a required compatibility commit.');
     if (remoteRef?.startsWith('refs/tags/') && !/^0+$/.test(remoteSha ?? '')) failures.push('Release tags are immutable.');
     if (remoteRef?.startsWith('refs/heads/') && !/^0+$/.test(remoteSha ?? '') && !isAncestor(remoteSha, localSha)) failures.push('Fetch the remote and use a merge; do not rewrite published history.');
     if (!localRef || !/^[a-f0-9]{40}$/.test(localSha ?? '') || !/^[a-f0-9]{40}$/.test(remoteSha ?? '')) failures.push('Malformed Git push input.');
