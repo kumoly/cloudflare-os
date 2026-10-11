@@ -4,7 +4,8 @@ CFOS is the `kumoly/cloudflare-os` downstream of `cloudflare/cloudflare-os`.
 Keep upstream history intact, preserve local compatibility as small commits,
 and distinguish local development validation from a stable release.
 The owner authorizes the existing local CFOS deployment as the development
-validation environment; ordinary iterations do not wait for full CI.
+validation environment. Local checks and actual CFOS acceptance are the
+default verification; GitHub CI is optional and currently disabled on the fork.
 PDF is the first general capability extension; JLPT is an acceptance use case.
 
 ## Repository ownership
@@ -68,9 +69,10 @@ contract. Platform document methods contain no JLPT-specific logic.
 
 Use the existing `127.0.0.1:8787` CFOS instance to validate small, committed
 changes from a feature worktree. This is the default development path. A stable
-release still requires the protected integration PR, complete CI and an exact
-source record. Full CI runs in the background and must pass before merging;
-a green local smoke test does not certify a stable release.
+release requires the protected integration PR, recorded local validation and
+an exact source record. GitHub CI is not a required merge check. A green local
+smoke test alone does not certify a stable release: affected type checks,
+functional tests and feature acceptance must be recorded for its source commit.
 
 1. Implement one small change in the feature worktree. Keep dependencies and
    Vite+ caches between iterations; install with `pnpm install --frozen-lockfile`
@@ -79,8 +81,9 @@ a green local smoke test does not certify a stable release.
    for short suites and `pnpm exec vp run -F PACKAGE --cache build` for the
    affected package and its dependencies. Do not repeat all-repository build,
    type check and lint aliases that perform the same work.
-3. Commit the reviewed local delta. Push it to the fork to start background CI.
-   The local update does not wait for a PR, CI completion, merge or release tag.
+3. Commit the reviewed local delta. Push to the fork to preserve and review it.
+   Push and PR events do not start CI. The local update does not wait for a PR,
+   merge or release tag.
 4. Run the host `dev-loop` adapter. It verifies the branch, fingerprints all
    managed runtime source, runs the focused checks, saves only changed source
    files for rollback, applies the delta and verifies login and persistence.
@@ -141,9 +144,13 @@ not remove an operation lock until its recorded process has stopped.
 
 The `apply` operation repeats checks so one command is sufficient after a
 commit. If those checks already ran during editing, cached builds replay.
-Shared GitHub concurrency groups cancel superseded push/PR CI runs on a
-feature branch. CI reports are consumed before integration, rather than
-blocking each local experiment. Target ordinary source iterations at under
+The fork CI workflows are disabled in repository settings and their source
+definitions expose only `workflow_dispatch`. Required GitHub status checks are
+removed from `cfos/main`; PRs, force-push/deletion protection and immutable
+release tags remain. When cross-platform checks become useful, merge the
+manual workflow definitions into the default branch, enable the desired
+workflow and dispatch it for an exact ref. This optional run does not change
+the local development path. Target ordinary source iterations at under
 one minute excluding model response time; measure actual receipts before
 claiming a latency guarantee.
 
@@ -186,7 +193,8 @@ pnpm test
 The guard checks source ancestry, required compatibility commits, a clean
 worktree, branch names and remote identity. The pre-push hook also refuses
 upstream pushes, updates to `main`, remote deletion, release-tag replacement,
-and non-fast-forward branch updates. It does not replace CI or tests.
+and non-fast-forward branch updates. It does not replace functional tests
+or CFOS acceptance.
 
 Install the hook with the absolute path of the stable integration worktree:
 
@@ -194,9 +202,10 @@ Install the hook with the absolute path of the stable integration worktree:
 git config core.hooksPath "$PWD/.worktrees/integration/.cfos/hooks"
 ```
 
-Protect `cfos/main` on the fork with the required checks named in the stack
-configuration, disallow force pushes and deletion, and use PRs for changes.
-CI uses read-only repository permissions and never deploys. A public fork's
+Protect `cfos/main` on the fork against force pushes and deletion, and use PRs
+for changes. `.cfos/stack.json` has no required GitHub checks; optional checks
+are listed separately. Record local validation before merging. Optional CI
+uses read-only repository permissions and never deploys. A public fork's
 capability tests use synthetic files and disposable services, never private
 documents, production credentials or live deployment state.
 
@@ -213,8 +222,9 @@ commit and tree, upstream base, compatibility commits, lockfile and stack hashes
 It starts with `deployable: false` and validation marked `not_run`. A manifest
 is a source record, not evidence that tests passed.
 
-For stable releases, record CI results and risk-appropriate acceptance for that
-exact candidate. Use isolated copied-state acceptance for upstream upgrades,
+For stable releases, record local lint/type/test results and risk-appropriate
+CFOS acceptance for that exact candidate. Record optional CI only when run;
+never infer passed checks from an empty required GitHub check list. Use isolated copied-state acceptance for upstream upgrades,
 storage changes and recovery exercises; ordinary source-only local iterations
 use the fast loop above. Build the
 artifact from the fixed revision and record its checksum and toolchain. If the
