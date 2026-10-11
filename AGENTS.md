@@ -4,7 +4,9 @@ CFOS downstream development follows `docs/cfos-development.md` and `.cfos/stack.
 Use the personal fork as `origin`, keep `upstream` push-disabled, and implement changes in
 feature worktrees based on `cfos/main`. Never implement a feature in the running service
 checkout. Preserve upstream and published downstream history; do not force-push shared
-branches or replace release tags. Run the CFOS guard and the required checks before publishing.
+branches or replace release tags. Run the CFOS guard before publishing. Use the documented fast local loop for
+authorized local validation; required CI checks must pass before integration
+or stable release, and may run in the background during development.
 
 The following files are commonly important to reference:
 

@@ -26,5 +26,5 @@
     "Build and test",
     "CFOS branch and release checks"
   ],
-  "deployment": "immutable source commit plus release manifest; isolated acceptance before promotion"
+  "deployment": "local-dev: focused checks and direct local acceptance; stable: immutable commit, complete CI and risk-appropriate acceptance"
 }

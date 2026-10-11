@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Push and PR events for one branch share a queue; only the newest feature run is useful.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref_name != 'cfos/main' && github.ref_name != 'main' }}
+
 jobs:
   downstream:
     name: CFOS branch and release checks
@@ -24,6 +29,6 @@ jobs:
           git remote add upstream https://github.com/cloudflare/cloudflare-os.git
           git remote set-url --push upstream DISABLED
       - name: Test branch and release guards
-        run: node --test scripts/cfos.test.mjs
+        run: node --test scripts/cfos.test.mjs scripts/cfos-local.test.mjs
       - name: Check downstream lineage and remotes
         run: node scripts/cfos.mjs verify --publish --detached
