@@ -26,11 +26,11 @@ export function forbiddenPath(path) {
   const parts = path.toLowerCase().split('/');
   const name = parts.at(-1);
   if (/[a-z0-9][^\s/@]*@[a-z0-9.-]+/i.test(path)) return true;
-  if (parts.some(part => ['..', '.git', 'node_modules', '.wrangler', '.local', '.decrypted'].includes(part))) return true;
+  if (parts.some(part => ['..', '.git', 'node_modules', '.wrangler', '.terraform', '.local', '.decrypted', 'private-fixtures'].includes(part))) return true;
   if (['config', 'data', 'logs', 'backups', 'tmp', 'output', 'private', 'private-fixtures'].includes(parts[0])) return true;
   if (/^\.env(?:\..*)?$|^\.dev\.vars(?:\..*)?$/.test(name)) return !/\.(example|sample|template)$/.test(name);
   return /^(admin-bootstrap\.txt|google-oauth-client\.json|credentials(?:\..*)?\.json|id_rsa|id_ed25519|dev-loop-state\.json|journal\.json|wrangler\.(dev|prod|staging)\.jsonc)$/.test(name) ||
-    /\.(pem|key|p12|pfx|agekey|tfstate|tfvars|tfplan|sqlite|sqlite3|db|log|zip|gz|age)$/.test(name);
+    /\.(pem|key|p12|pfx|agekey|tfplan|sqlite|sqlite3|db|zip|gz|age)$/.test(name) || /\.(tfstate|tfvars|log)(?:\..*)?$/.test(name);
 }
 
 /** Binary/sample approval is exact by path and content, with a recorded synthetic origin. */

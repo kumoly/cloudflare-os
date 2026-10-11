@@ -30,7 +30,7 @@ function fixture(t) {
 }
 
 test('sensitive path policy cannot be bypassed by force adding ignored files', () => {
-  for (const path of ['.env.local', 'config/admin-bootstrap.txt', 'packages/x/.dev.vars', 'logs/result.txt', 'secrets/key.pem', 'fixtures/account.sqlite', 'private-fixtures/doc.txt']) assert.equal(forbiddenPath(path), true, path);
+  for (const path of ['.env.local', 'config/admin-bootstrap.txt', 'packages/x/.dev.vars', 'logs/result.txt', 'secrets/key.pem', 'fixtures/account.sqlite', 'private-fixtures/doc.txt', 'packages/x/private-fixtures/person.txt', 'state.tfvars.json', 'state.tfstate.backup', 'result.log.1', '.terraform/cache.txt']) assert.equal(forbiddenPath(path), true, path);
   for (const path of ['.env.example', 'packages/x/src/config.ts', 'packages/x/package.json']) assert.equal(forbiddenPath(path), false, path);
 });
 test('identity policy permits noreply identities and rejects ordinary emails', () => {
