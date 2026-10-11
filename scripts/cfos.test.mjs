@@ -40,6 +40,12 @@ test('release tags cannot be replaced and malformed ref data fails closed', () =
   assert.ok(check(`refs/tags/cfos-v0.1.0 ${sha} refs/tags/cfos-v0.1.0 ${sha}`).length);
   assert.ok(check('garbage').length);
 });
+test('publishing another branch cannot borrow the current checkout verification', () => {
+  const other = 'e'.repeat(40);
+  const errors = pushViolations(report,'origin','git@github-kumoly:kumoly/cloudflare-os.git',refs('feat/other',zero,other),(a,b)=>a===b);
+  assert.ok(errors.some(message=>message.includes('checked HEAD')));
+  assert.ok(errors.some(message=>message.includes('upstream base')));
+});
 test('candidate records pin exact source and never invent passing validation', () => {
   const manifest = candidateManifest(report);
   assert.equal(manifest.sourceCommit, sha);
