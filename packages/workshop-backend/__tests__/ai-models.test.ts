@@ -1650,6 +1650,31 @@ describe("System prompt cache blocks", () => {
     expect(breakpointTtls(split)).toEqual(["1h", ...unsplitSystem.map(() => "1h"), "5m"]);
   }, 15000);
 
+  it.each(["short", "long"] as const)(
+      "keeps custom Anthropic gateways on a uniform cache lifetime with %s caching",
+      async (cacheRetention) => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "anthropic", model: "claude-sonnet-4-5", apiToken: "direct-api-token",
+      apiUrl: "https://anthropic-gateway.example",
+    }, INITIATOR);
+    const body = await captureBody(handle, true, { cacheRetention });
+    const ttls = breakpointTtls(body);
+    expect(ttls.length).toBeGreaterThan(1);
+    expect(ttls.every(ttl => ttl === "5m")).toBe(true);
+    expect(JSON.parse(body).system).toEqual([
+      expect.objectContaining({ text: STATIC_TEXT }),
+      expect.objectContaining({ text: RENDERED_TEXT.slice(STATIC_TEXT.length) }),
+    ]);
+  }, 15000);
+
+  it("keeps the longer head cache on an explicitly configured native Anthropic endpoint", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "anthropic", model: "claude-sonnet-4-5", apiToken: "direct-api-token",
+      apiUrl: "https://api.anthropic.com/",
+    }, INITIATOR);
+    expect(breakpointTtls(await captureBody(handle, true))).toEqual(["1h", "1h", "5m"]);
+  }, 15000);
+
   function openAiHandle(model: string): ModelHandle {
     const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "openai", model, apiToken: "direct-api-token",
