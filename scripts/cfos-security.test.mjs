@@ -92,6 +92,11 @@ test('JSON credential literals and contact fields are blocked', t => {
   f.add('src/contact.json', JSON.stringify({ password: ['runtime', 'canary', 'value'].join('-'), full_name: ['Synthetic', 'Person'].join(' '), phone: ['+1', '203', '555', '0101'].join(' ') }));
   assert.throws(f.audit, /cfos-credential-literal|cfos-phone-literal/);
 });
+test('short and punctuation-containing credential literals are blocked', t => {
+  const f = fixture(t);
+  f.add('src/short.json', JSON.stringify({ password: ['x', '!'].join('') }));
+  assert.throws(f.audit, /cfos-credential-literal/);
+});
 test('encoded credentials are scanned and failed scanners remain fail closed', t => {
   const f = fixture(t);
   f.add('src/encoded.txt', Buffer.from(canary()).toString('base64'));
