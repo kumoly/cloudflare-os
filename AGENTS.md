@@ -5,7 +5,9 @@ Use the personal fork as `origin`, keep `upstream` push-disabled, and implement 
 feature worktrees based on `cfos/main`. Never implement a feature in the running service
 checkout. Preserve upstream and published downstream history; do not force-push shared
 branches or replace release tags. Run the CFOS guard before publishing. Use the documented fast local loop for
-authorized local validation. GitHub CI is optional and currently disabled;
+authorized local validation; public CI runs in the background and is required
+before integration. Run publication privacy checks before every push. Keep host
+state and real documents outside the fork, use noreply commit identities, and
 record local checks and CFOS acceptance before integration or stable release.
 
 The following files are commonly important to reference:
@@ -118,7 +120,7 @@ To test changes:
 - The packages whose tests run in workerd (`router`, `typed-storage`, `observability`, `workshop-backend`, `gatekeeper-scheduler`, `gatekeeper-cloudflare`, `gatekeeper-kit`) load `scripts/assert-workerd.ts` as a `setupFiles` entry. It throws unless `navigator.userAgent` is `Cloudflare-Workers`, so a `@cloudflare/vitest-pool-workers` pool that fails to start fails the suite instead of silently falling back to Node — which otherwise looks like a pass in the packages that import no `cloudflare:*` module. Don't remove it to make a suite green.
 
 Linting (oxlint, via Vite+):
-- `pnpm lint` combines `lint:check` (oxlint), `types:scripts` and `types:check`. CFOS iterations run affected lint/type/test checks before publishing; upstream synchronization and broad releases run the complete local checks. GitHub CI is optional.
+- `pnpm lint` combines `lint:check` (oxlint), `types:scripts` and `types:check`. CFOS iterations run affected lint/type/test checks before publishing; upstream synchronization and broad releases run the complete local checks. Public CI checks the same source before integration.
 - Individual scripts:
     * `pnpm lint:check` / `pnpm lint:fix` — `vp lint`, i.e. oxlint driven by Vite+ (rules in the `lint` block of the root `vite.config.ts`; `correctness` + `suspicious` as errors). Vite+ pins the oxlint it runs (1.85.0), so there is no separate `oxlint` dependency to drift from it and no `.oxlintrc.json` beside the config — one toolchain config, one version. Diagnostics are identical to what running that oxlint directly would emit. The custom `gadgets/*` rules in `scripts/oxlint-plugin.ts` import their types and `RuleTester` from `vite-plus/lint/plugins{,-dev}` for the same reason.
     * `pnpm types:check` — an alias for `pnpm build`. They were separate scripts running the same recursive `tsc` twice; one name is kept for habit and the other because the codegen prerequisites hang off it. `vp lint` is not part of `vp run`, so it has no task cache; it takes about a second regardless.
