@@ -70,7 +70,7 @@ test('restoring source bytes returns the old fingerprint including executable mo
 });
 
 test('path policy uses hot reload, assets or restart and escalates structural changes', () => {
-  assert.equal(changeMode(['docs/cfos-development.md', 'scripts/cfos-local.mjs']), 'source-only');
+  assert.equal(changeMode(['docs/cfos-development.md', 'scripts/cfos-local.mjs', '.gitignore', '.gitleaks.toml']), 'source-only');
   assert.equal(changeMode(['packages/workshop-backend/__tests__/agent.test.ts']), 'source-only');
   assert.equal(changeMode(['packages/gatekeeper-documents/src/index.ts']), 'hot');
   assert.equal(changeMode(['packages/workshop-shared/src/api.ts']), 'frontend');

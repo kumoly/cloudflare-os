@@ -56,7 +56,7 @@ export function planChanges(app, previous, target) {
 
 /** Select the incremental path; dependency and storage changes use the full deployment procedure. */
 export function changeMode(paths) {
-  const runtime = paths.filter(path => !/^(docs\/|plans\/|\.github\/|\.cfos\/|AGENTS\.md$|README\.md$|scripts\/cfos(?:[.-]|$))/.test(path) && !/(^|\/)__tests__\/|\.test\.[cm]?[jt]sx?$/.test(path));
+  const runtime = paths.filter(path => !/^(docs\/|plans\/|\.github\/|\.cfos\/|AGENTS\.md$|README\.md$|\.gitignore$|\.gitleaks\.toml$|scripts\/cfos(?:[.-]|$))/.test(path) && !/(^|\/)__tests__\/|\.test\.[cm]?[jt]sx?$/.test(path));
   if (!runtime.length) return 'source-only';
   if (runtime.some(path => /(^|\/)(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.npmrc)$|(^|\/)(migrations?|schema)(\/|\.)|^packages\/typed-storage\//i.test(path))) return 'full-update';
   if (runtime.every(path => /^packages\/[^/]+\/(src|app)\//.test(path))) {
