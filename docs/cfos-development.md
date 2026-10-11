@@ -83,7 +83,7 @@ functional tests and feature acceptance must be recorded for its source commit.
    affected package and its dependencies. Do not repeat all-repository build,
    type check and lint aliases that perform the same work.
 3. Commit the reviewed local delta. Push to the fork to preserve and review it.
-   Push and PR events start public CI in the background. The local update does
+   Push events start public CI in the background. The local update does
    not wait for a PR, CI completion, merge or release tag.
 4. Run the host `dev-loop` adapter. It verifies the branch, fingerprints all
    managed runtime source, runs the focused checks, saves only changed source
@@ -146,11 +146,14 @@ not remove an operation lock until its recorded process has stopped.
 The `apply` operation repeats checks so one command is sufficient after a
 commit. If those checks already ran during editing, cached builds replay.
 The public fork runs the standard Ubuntu CI workflow, with privacy checks before
-lint/build/test. Superseded push/PR runs share a concurrency group. The runner
+lint/build/test. Superseded push runs share a concurrency group; PR creation does not start
+a duplicate run for the same commit. The runner
 jobs are gated on the expected public repository; conversion to a private
 repository skips these jobs. The separate manual CFOS-checks workflow and the
 inherited Cloudflare organization workflows remain disabled. Local iterations
-continue while CI runs; integration requires its three named checks.
+continue while CI runs; integration requires its three named checks. External
+fork contributions must be reviewed and imported to a downstream branch so the
+expected public-repository CI runs before integration.
 Target ordinary source iterations at under
 one minute excluding model response time; measure actual receipts before
 claiming a latency guarantee.
