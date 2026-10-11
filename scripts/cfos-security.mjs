@@ -24,6 +24,7 @@ export function publicAuthorName(name) {
 export function forbiddenPath(path) {
   const parts = path.toLowerCase().split('/');
   const name = parts.at(-1);
+  if (/[a-z0-9][^\s/@]*@[a-z0-9.-]+/i.test(path)) return true;
   if (parts.some(part => ['..', '.git', 'node_modules', '.wrangler', '.local', '.decrypted'].includes(part))) return true;
   if (['config', 'data', 'logs', 'backups', 'tmp', 'output', 'private', 'private-fixtures'].includes(parts[0])) return true;
   if (/^\.env(?:\..*)?$|^\.dev\.vars(?:\..*)?$/.test(name)) return !/\.(example|sample|template)$/.test(name);
@@ -100,6 +101,11 @@ export function auditSecurity({ root = process.cwd(), head = 'HEAD', trusted = '
         const [, mode, hash, path] = line.match(/^(\d+) blob ([a-f0-9]{40})\t(.+)$/s) ?? [];
         if (!path) { issues.push(label('unsupported-tree-entry', id)); continue; }
         if (!changed.has(path) || trustedEntries.get(path) === hash) continue;
+        for (const input of [providerDirectory, privacyDirectory]) {
+          const pathFile = resolve(input, `path-${fileCount++}.txt`);
+          writeFileSync(pathFile, path, { mode: 0o600 });
+          staged.set(pathFile, { commit: id, path });
+        }
         if (!pathsByBlob.has(hash)) pathsByBlob.set(hash, new Set());
         pathsByBlob.get(hash).add(path);
         if (forbiddenPath(path)) { issues.push(label('forbidden-path', id, path)); continue; }
