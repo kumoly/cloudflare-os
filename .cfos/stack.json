@@ -8,23 +8,27 @@
     {
       "name": "macos-runtime",
       "category": "compatibility",
-      "commit": "269b49064b1d363fffc529b8556af00edf53f7eb"
+      "commit": "62a6240ee639ec1bf0d67f598e78633122908ed6"
     },
     {
       "name": "openai-api-format",
       "category": "compatibility",
-      "commit": "910d29c24c7fd4454d27279e0576eb0f5da021e1"
+      "commit": "79e4ebf4794b66bc4df8cf3b5254440ca39190ce"
     },
     {
       "name": "custom-gateway-cache",
       "category": "compatibility",
-      "commit": "6e77702eaaa306905c1ab6cfb635a83452e80384"
+      "commit": "f8fef9eb19f74d8dce2bef8ebe7c8a8b552305b1"
     }
   ],
   "requiredChecks": [
+    "CFOS privacy checks",
     "Lint",
-    "Build and test",
-    "CFOS branch and release checks"
+    "Build and test"
   ],
-  "deployment": "immutable source commit plus release manifest; isolated acceptance before promotion"
+  "deployment": "local-dev: focused checks and direct local acceptance; integration: publication privacy and public CI; stable: immutable commit and recorded local acceptance",
+  "validation": {
+    "primary": "local focused checks and CFOS acceptance; public CI before integration",
+    "githubCI": "standard GitHub-hosted Ubuntu runner on the public fork only"
+  }
 }

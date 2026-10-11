@@ -2,7 +2,11 @@
 
 CFOS is the `kumoly/cloudflare-os` downstream of `cloudflare/cloudflare-os`.
 Keep upstream history intact, preserve local compatibility as small commits,
-and deploy only source revisions that have passed CI and isolated acceptance.
+and distinguish local development validation from a stable release.
+The owner authorizes the existing local CFOS deployment as the development
+validation environment. Local checks and actual CFOS acceptance are the
+default verification. Free standard Ubuntu CI verifies the public fork before
+integration, with publication privacy checks preceding build and tests.
 PDF is the first general capability extension; JLPT is an acceptance use case.
 
 ## Repository ownership
@@ -62,6 +66,95 @@ A skill describes a workflow; executable dependencies live in a versioned
 tool service or image. An extension declares its capabilities and file/job
 contract. Platform document methods contain no JLPT-specific logic.
 
+## Fast local development loop
+
+Use the existing `127.0.0.1:8787` CFOS instance to validate small, committed
+changes from a feature worktree. This is the default development path. A stable
+release requires the protected integration PR, recorded local validation and
+an exact source record. Public CI is required before integration. A green local
+smoke test alone does not certify a stable release: affected type checks,
+functional tests and feature acceptance must be recorded for its source commit.
+
+1. Implement one small change in the feature worktree. Keep dependencies and
+   Vite+ caches between iterations; install with `pnpm install --frozen-lockfile`
+   when first preparing a worktree or when its lockfile changes.
+2. Run the affected tests and type check. Use `pnpm --filter PACKAGE test:run`
+   for short suites and `pnpm exec vp run -F PACKAGE --cache build` for the
+   affected package and its dependencies. Do not repeat all-repository build,
+   type check and lint aliases that perform the same work.
+3. Commit the reviewed local delta. Push to the fork to preserve and review it.
+   Push and PR events start public CI in the background. The local update does
+   not wait for a PR, CI completion, merge or release tag.
+4. Run the host `dev-loop` adapter. It verifies the branch, fingerprints all
+   managed runtime source, runs the focused checks, saves only changed source
+   files for rollback, applies the delta and verifies login and persistence.
+5. Run a feature acceptance through CFOS's actual agent/gadget interface. A
+   runtime change requires an explicit acceptance command; HTTP health alone
+   is insufficient. Failures automatically restore the previous source and
+   repeat the smoke checks. Fix, commit and repeat.
+
+On the current Mac the installed adapter is
+`~/services/cloudflare-os/config/dev-loop`; its source belongs to
+`connright/nodes/clawxu/cloudflare-os/scripts/dev-loop`. The updater and its
+filesystem tests are versioned in this fork as `scripts/cfos-local.mjs` and
+`scripts/cfos-local.test.mjs`. The adapter installs their tested versions in
+the service configuration directory, together with `doctor`, the password
+parser and login/persistence smoke script from the host operations repository.
+
+```sh
+# SOURCE is an existing, clean feature worktree; do not run in the service app.
+~/services/cloudflare-os/config/dev-loop "$SOURCE" plan
+~/services/cloudflare-os/config/dev-loop "$SOURCE" apply --state-compatible \
+  --check 'pnpm --filter @gadgets/gatekeeper-documents test:run' \
+  --check 'pnpm exec vp run -F @gadgets/gatekeeper-documents --cache build' \
+  --accept '/absolute/path/to/document-acceptance'
+~/services/cloudflare-os/config/dev-loop "$SOURCE" rollback
+```
+
+The documents package and acceptance command above illustrate the future PDF
+iteration; use real commands for the package being changed. `--check` runs in
+the feature worktree; `--accept` runs against the service app after updating.
+Commands must not contain credentials. `--state-compatible` is a developer's
+assertion that this change can be undone by restoring source alone. It is not
+an extra user approval on each iteration. The owner has already authorized
+these local validation updates.
+
+| Change | Local update path |
+| --- | --- |
+| Documentation or tests | Source synchronization and smoke; no restart |
+| Existing backend or gatekeeper source | Changed-file synchronization and Wrangler hot reload |
+| Workshop UI or shared API used by it | Rebuild cached frontend assets, then smoke and feature acceptance |
+| Worker inventory or startup configuration | Explicit `--restart`; cached startup and acceptance |
+| Package manifests, lockfile, toolchain or data migration | Full update with scoped state backup and compatibility validation |
+
+Migration-like paths are refused automatically, but path names cannot prove
+storage compatibility. Inspect Durable Object initialization and storage
+writes before asserting `--state-compatible`. A new PDF worker's initial
+installation may need the full path; subsequent source-only iterations use
+hot reload. A changed runner dependency belongs to the full path too.
+
+The updater shares `tmp/backup-operation.lock` with backups. It preserves
+ignored dependencies, generated OAuth configuration and persistent state,
+refuses unmanaged source edits and records the exact installed source tree
+in `config/dev-loop-state.json`. This local receipt takes precedence over
+`app`'s legacy Git HEAD and the old stable runtime metadata while development
+source is installed. It records `channel: local-dev`, measured duration,
+focused checks, acceptance and rollback location; it never asserts CI passed
+or moves a release tag. Interrupted operations retain a source journal; do
+not remove an operation lock until its recorded process has stopped.
+
+The `apply` operation repeats checks so one command is sufficient after a
+commit. If those checks already ran during editing, cached builds replay.
+The public fork runs the standard Ubuntu CI workflow, with privacy checks before
+lint/build/test. Superseded push/PR runs share a concurrency group. The runner
+jobs are gated on the expected public repository; conversion to a private
+repository skips these jobs. The separate manual CFOS-checks workflow and the
+inherited Cloudflare organization workflows remain disabled. Local iterations
+continue while CI runs; integration requires its three named checks.
+Target ordinary source iterations at under
+one minute excluding model response time; measure actual receipts before
+claiming a latency guarantee.
+
 ## Upstream update procedure
 
 1. Check for local changes and preserve them; fetch `upstream/main`.
@@ -101,7 +194,8 @@ pnpm test
 The guard checks source ancestry, required compatibility commits, a clean
 worktree, branch names and remote identity. The pre-push hook also refuses
 upstream pushes, updates to `main`, remote deletion, release-tag replacement,
-and non-fast-forward branch updates. It does not replace CI or tests.
+and non-fast-forward branch updates. It does not replace functional tests
+or CFOS acceptance.
 
 Install the hook with the absolute path of the stable integration worktree:
 
@@ -109,9 +203,10 @@ Install the hook with the absolute path of the stable integration worktree:
 git config core.hooksPath "$PWD/.worktrees/integration/.cfos/hooks"
 ```
 
-Protect `cfos/main` on the fork with the required checks named in the stack
-configuration, disallow force pushes and deletion, and use PRs for changes.
-CI uses read-only repository permissions and never deploys. A public fork's
+Protect `cfos/main` on the fork against force pushes and deletion, and use PRs
+for changes. `.cfos/stack.json` lists the three required GitHub checks. Record local
+validation before merging. Public CI
+uses read-only repository permissions and never deploys. A public fork's
 capability tests use synthetic files and disposable services, never private
 documents, production credentials or live deployment state.
 
@@ -128,7 +223,10 @@ commit and tree, upstream base, compatibility commits, lockfile and stack hashes
 It starts with `deployable: false` and validation marked `not_run`. A manifest
 is a source record, not evidence that tests passed.
 
-Record CI results and isolated acceptance for that exact candidate. Build the
+For stable releases, record local lint/type/test results and risk-appropriate
+CFOS acceptance for that exact candidate. Record exact public CI results; do not treat a source manifest as validation. Use isolated copied-state acceptance for upstream upgrades,
+storage changes and recovery exercises; ordinary source-only local iterations
+use the fast loop above. Build the
 artifact from the fixed revision and record its checksum and toolchain. If the
 source or lockfile changes, create a new candidate and rerun affected checks.
 Promote through the existing scoped backup and replacement procedure; retain
@@ -149,3 +247,41 @@ Japanese pages, corrupt/encrypted documents, limits, interruption, and access
 isolation. JLPT validates one application's integration after the general
 capability contracts pass. Multimodal LLM and chat-attachment adapters are
 separate kernel changes, reviewed and tested independently.
+
+## Publication privacy
+
+The installed pre-push hook checks both Git lineage and publication privacy.
+Run `node scripts/cfos-security.mjs` to audit without pushing. Gitleaks 8.30.1
+is required locally; missing tools, invalid policy or failed scans block a push.
+CI uses the same CLI release and verifies its Linux archive checksum.
+
+The guard audits all commits outside the fetched official upstream: author and
+committer emails, full commit objects/messages, every added/intermediate blob,
+merge-only content and sensitive paths. Removing a secret at the tip does not
+remove it from the audited range. Use the repository's GitHub noreply identity;
+real mailbox addresses cannot enter new downstream commits. Ignored files are
+also rejected if force-added. Git's `--no-verify` can bypass local hooks, so keep
+GitHub push protection enabled and require the privacy CI check for integration.
+
+Default Gitleaks secret rules run on complete blobs. Additional contact and
+literal-credential rules scan newly introduced text; exact unchanged lines in
+the same official upstream file are recognized as existing public examples.
+This is not a broad file allowlist. Diagnostics contain rule names, commits and
+filename hashes, never matched values or raw scanner stderr. Temporary scans
+run in mode-0700 directories outside the source checkout and are removed.
+
+Host config, bootstrap/OAuth files, logs, state, recovery archives and receipts
+belong outside this repository. Real PDFs and other user documents never belong
+in fixtures. New binary assets, PDFs and data files are blocked unless their
+path and SHA-256 are recorded in `.cfos/security.json` with `synthetic: true`
+and a provenance explanation. Generate them from public synthetic inputs and
+review them before approving their hash; changes require fresh approval.
+Reserved example domains and synthetic contact values are used in text tests.
+
+PII detection is necessarily bounded: free-form names, images and every kind of
+personal data cannot be reliably identified by regex. Human diff review and
+synthetic-only fixtures complement automated checks. Scan PR descriptions and
+other manually published text too; Git hooks protect Git objects, not every
+GitHub web edit. Historical identity cleanup was explicitly authorized; it is
+a one-time rewrite, not a relaxation of the normal no-force-push rule. GitHub
+cached objects and old PR refs need separate support handling.
