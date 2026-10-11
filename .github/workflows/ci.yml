@@ -3,15 +3,14 @@ name: CI
 on:
   push:
     branches: ['cfos/**', 'feat/**', 'fix/**', 'chore/**', 'sync/**', 'release/**']
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Superseded push/PR runs for the same branch share a queue.
+# One push run per branch commit; superseded commits share a queue.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.ref_name }}
   cancel-in-progress: ${{ github.ref_name != 'cfos/main' && github.ref_name != 'main' }}
 
 env:
