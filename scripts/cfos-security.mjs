@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const git = (root, ...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+class PublicationError extends Error {}
 
 /** Only public GitHub identities may author new downstream commits. */
 export function publicIdentity(email) {
@@ -48,16 +49,16 @@ function label(code, commit, path) {
 }
 
 /** Scan every untrusted downstream commit, including removed files and merge-only changes. */
-export function auditSecurity({ root = process.cwd(), head = 'HEAD', trusted = 'refs/remotes/upstream/main', policyRoot = resolve(here, '..'), scanner = 'gitleaks' } = {}) {
+function inspectSecurity({ root = process.cwd(), head = 'HEAD', trusted = 'refs/remotes/upstream/main', policyRoot = resolve(here, '..'), scanner = 'gitleaks' } = {}) {
   const policy = JSON.parse(readFileSync(resolve(policyRoot, '.cfos/security.json'), 'utf8'));
-  if (policy.schemaVersion !== 1 || policy.gitleaksVersion !== '8.30.1' || !Number.isSafeInteger(policy.maxBlobBytes) || policy.maxBlobBytes < 1 || policy.maxBlobBytes > 2 * 1024 * 1024 || !Array.isArray(policy.syntheticAssets)) throw new Error('Invalid publication privacy policy.');
+  if (policy.schemaVersion !== 1 || policy.gitleaksVersion !== '8.30.1' || !Number.isSafeInteger(policy.maxBlobBytes) || policy.maxBlobBytes < 1 || policy.maxBlobBytes > 2 * 1024 * 1024 || !Array.isArray(policy.syntheticAssets)) throw new PublicationError('Invalid publication privacy policy.');
   const samples = new Set();
   for (const sample of policy.syntheticAssets) {
-    if (typeof sample.path !== 'string' || forbiddenPath(sample.path) || !/^[a-f0-9]{64}$/.test(sample.sha256) || sample.synthetic !== true || typeof sample.reason !== 'string' || !sample.reason.trim() || samples.has(sample.path)) throw new Error('Invalid synthetic sample approval.');
+    if (typeof sample.path !== 'string' || forbiddenPath(sample.path) || !/^[a-f0-9]{64}$/.test(sample.sha256) || sample.synthetic !== true || typeof sample.reason !== 'string' || !sample.reason.trim() || samples.has(sample.path)) throw new PublicationError('Invalid synthetic sample approval.');
     samples.add(sample.path);
   }
   const version = spawnSync(scanner, ['version'], { encoding: 'utf8', timeout: 10_000 });
-  if (version.error || version.status !== 0 || version.stdout.trim() !== policy.gitleaksVersion) throw new Error('Pinned gitleaks 8.30.1 is required; publication blocked.');
+  if (version.error || version.status !== 0 || version.stdout.trim() !== policy.gitleaksVersion) throw new PublicationError('Pinned gitleaks 8.30.1 is required; publication blocked.');
   let commit;
   let upstream;
   let commits;
@@ -67,7 +68,7 @@ export function auditSecurity({ root = process.cwd(), head = 'HEAD', trusted = '
     upstream = git(root, 'rev-parse', '--verify', `${trusted}^{commit}`).trim();
     commits = git(root, 'rev-list', '--reverse', commit, '--not', upstream).trim().split('\n').filter(Boolean);
     objects = git(root, 'rev-list', '--objects', commit, '--not', upstream).trim().split('\n').filter(Boolean).map(line => line.split(' ')[0]);
-  } catch { throw new Error('Cannot resolve publication history and official upstream; publication blocked.'); }
+  } catch { throw new PublicationError('Cannot resolve publication history and official upstream; publication blocked.'); }
   const issues = [];
   const directory = mkdtempSync(resolve(tmpdir(), 'cfos-privacy-'));
   const providerDirectory = resolve(directory, 'providers');
@@ -154,26 +155,35 @@ export function auditSecurity({ root = process.cwd(), head = 'HEAD', trusted = '
       '--max-decode-depth=5', '--timeout=60', '--report-format=json', '--report-path', report, input], {
       cwd: root, encoding: 'utf8', timeout: 70_000, maxBuffer: 4 * 1024 * 1024,
     });
-    if (result.error || ![0, 3].includes(result.status)) throw new Error('Secret/PII scanner failed; publication blocked.');
+    if (result.error || ![0, 3].includes(result.status)) throw new PublicationError('Secret/PII scanner failed; publication blocked.');
     const findings = JSON.parse(readFileSync(report, 'utf8'));
-    if (!Array.isArray(findings) || (result.status === 3 && !findings.length)) throw new Error('Invalid scanner result; publication blocked.');
+    if (!Array.isArray(findings) || (result.status === 3 && !findings.length)) throw new PublicationError('Invalid scanner result; publication blocked.');
     for (const finding of findings) {
       const location = staged.get(resolve(input, finding.File)) ?? staged.get(resolve(finding.File));
       const rule = String(finding.RuleID).replace(/[^a-z0-9-]/gi, '').slice(0, 80);
       issues.push(label(`secret-or-pii:${rule}`, location?.commit ?? commit));
     }
     }
-    if (issues.length) throw new Error(`Publication blocked:\n${[...new Set(issues)].join('\n')}`);
+    if (issues.length) throw new PublicationError(`Publication blocked:\n${[...new Set(issues)].join('\n')}`);
     return { commits: commits.length, scannedFiles: fileCount, secretsAndPII: 'passed', identity: 'passed', sensitiveFiles: 'passed' };
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
+/** Fail closed with sanitized diagnostics, including malformed reports and filesystem errors. */
+export function auditSecurity(options = {}) {
+  try { return inspectSecurity(options); }
+  catch (error) {
+    if (error instanceof PublicationError) throw error;
+    throw new PublicationError('Privacy audit could not complete; publication blocked.');
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    if (process.argv.length > 2) throw new Error('Usage: node scripts/cfos-security.mjs');
+    if (process.argv.length > 2) throw new PublicationError('Usage: node scripts/cfos-security.mjs');
     console.log(JSON.stringify(auditSecurity()));
   } catch (error) {
-    console.error(error instanceof Error && !error.message.startsWith('Command failed:') ? error.message : 'Publication audit failed; publication blocked.');
+    console.error(error instanceof PublicationError ? error.message : 'Publication audit failed; publication blocked.');
     process.exitCode = 1;
   }
 }
