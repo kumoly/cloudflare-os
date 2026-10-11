@@ -21,10 +21,15 @@
       "commit": "6e77702eaaa306905c1ab6cfb635a83452e80384"
     }
   ],
-  "requiredChecks": [
+  "requiredChecks": [],
+  "deployment": "local-dev: focused checks and direct local acceptance; stable: immutable commit and recorded local validation appropriate to the change",
+  "optionalChecks": [
     "Lint",
     "Build and test",
     "CFOS branch and release checks"
   ],
-  "deployment": "local-dev: focused checks and direct local acceptance; stable: immutable commit, complete CI and risk-appropriate acceptance"
+  "validation": {
+    "primary": "local focused checks and CFOS acceptance",
+    "githubCI": "optional manual, currently disabled on the fork"
+  }
 }

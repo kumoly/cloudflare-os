@@ -1,23 +1,14 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
-      - 'cfos/**'
-      - 'feat/**'
-      - 'fix/**'
-      - 'chore/**'
-      - 'sync/**'
-      - 'release/**'
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# Push and PR events for one branch share a queue; only the newest feature run is useful.
+# Optional manual runs share a queue per branch.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.ref_name }}
   cancel-in-progress: ${{ github.ref_name != 'cfos/main' && github.ref_name != 'main' }}
 
 env:
