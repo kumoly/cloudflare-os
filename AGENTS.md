@@ -5,8 +5,10 @@ Use the personal fork as `origin`, keep `upstream` push-disabled, and implement 
 feature worktrees based on `cfos/main`. Never implement a feature in the running service
 checkout. Preserve upstream and published downstream history; do not force-push shared
 branches or replace release tags. Run the CFOS guard before publishing. Use the documented fast local loop for
-authorized local validation; required CI checks must pass before integration
-or stable release, and may run in the background during development.
+authorized local validation; public CI runs in the background and is required
+before integration. Run publication privacy checks before every push. Keep host
+state and real documents outside the fork, use noreply commit identities, and
+record local checks and CFOS acceptance before integration or stable release.
 
 The following files are commonly important to reference:
 
