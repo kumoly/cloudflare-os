@@ -67,6 +67,14 @@ it("authorizes before any backend health check or PDF transmission", async () =>
   expect(events).toEqual(["authorize", "health", "process"]);
   expect(fetcher.mock.calls[1][0].toString()).toContain(`/v1/scopes/${"a".repeat(64)}/jobs`);
 });
+it("preserves the branded global fetch receiver in Workers", async () => {
+  const fetcher: typeof fetch = async function (this: unknown, url: RequestInfo | URL) {
+    if (this !== globalThis) throw new TypeError("Illegal invocation");
+    return json(String(url).endsWith("/health") ? health : job);
+  };
+  expect(await session(runner(fetcher)).getStatus("job-one")).toEqual(job);
+});
+
 it("denied observations or revoked accounts transmit no data", async () => {
   const fetcher = vi.fn();
   await expect(session(runner(fetcher), vi.fn(async () => { throw new Error("Denied"); })).start(pdf, { operation: "extract" })).rejects.toThrow("Denied");

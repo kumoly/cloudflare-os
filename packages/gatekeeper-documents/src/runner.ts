@@ -43,7 +43,7 @@ export function validateOptions(options: DocumentOptions): DocumentOptions {
       options.pages && options.pages.length > 20) throw new TypeError("Select at most 20 pages.");
   if (options.dpi !== undefined && (!Number.isInteger(options.dpi) || options.dpi < 72 ||
       options.dpi > 144)) throw new TypeError("DPI must be between 72 and 144.");
-  if (options.language !== undefined && !/^[a-z][a-z0-9_]*(?:\+[a-z][a-z0-9_]*)*$/.test(options.language)) {
+  if (options.language !== undefined && !/^[a-z_]{2,16}(?:\+[a-z_]{2,16}){0,3}$/.test(options.language)) {
     throw new TypeError("Invalid OCR language.");
   }
   if ((options.language?.length ?? 0) > 128) throw new TypeError("Invalid OCR language.");
@@ -163,7 +163,8 @@ export class DocumentRunner {
     if (!/^[0-9a-f]{64}$/.test(scope)) throw new Error("Invalid runner namespace.");
     this.#token = settings.token!;
     this.#scope = scope;
-    this.#fetch = fetcher;
+    // Workers fetch is branded to the global object; a stored method must preserve its receiver.
+    this.#fetch = fetcher.bind(globalThis);
   }
   async start(pdf: Uint8Array, options: DocumentOptions): Promise<RunnerJob> {
     return parseRunnerJob(await this.#json("", "POST", { ...options, inputBase64: base64(pdf) }));
