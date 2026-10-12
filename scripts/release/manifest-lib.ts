@@ -269,6 +269,7 @@ const ARTIFACTS_CUT_ALLOWED = new Set(["gatekeeper-context"]);
 // Installable gatekeepers that do NOT take third-party OAuth app credentials; everyone else
 // defaults to CLIENT_ID/CLIENT_SECRET secret inputs (overridable via deploy-inputs.json).
 const NO_DEFAULT_CRED_INPUTS = new Set([
+  "gatekeeper-documents",     // configured execution service; no OAuth app
   "gatekeeper-context",       // no third-party service; uses its own storage
   "gatekeeper-homeassistant", // users connect their own Home Assistant URL + token in-app
   "gatekeeper-scheduler",     // auto-provisioned; no third-party OAuth app
@@ -305,6 +306,7 @@ const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler", "gatek
 // multi-install. Independent of PREINSTALL in principle; the ambient three coincide with it today
 // only because every ambient gatekeeper we ship is also preinstalled.
 const SINGLETON = new Set([
+  "gatekeeper-documents",     // (1) account-level DocumentSession
   "gatekeeper-context",       // (1) ambient ContextLibrary
   "gatekeeper-scheduler",     // (1) ambient ScheduleSession
   "gatekeeper-websearch",     // (1) ambient WebSearchSession

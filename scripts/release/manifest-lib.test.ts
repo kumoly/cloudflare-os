@@ -169,6 +169,12 @@ test("worker entries carry the deploy contract", () => {
   assert.equal(workers["gatekeeper-scheduler"].preinstall, true);
   assert.equal(workers["gatekeeper-scheduler"].singleton, true);
   assert.deepEqual(workers["gatekeeper-scheduler"].inputs, []);
+  // Documents needs an explicit runner and must never install without configuration.
+  const documents = workers["gatekeeper-documents"];
+  assert.equal(documents.singleton, true);
+  assert.equal(documents.preinstall, undefined);
+  assert.deepEqual(documents.inputs?.map((input) => input.name),
+    ["DOCUMENT_RUNNER_URL", "DOCUMENT_RUNNER_TOKEN"]);
   assert.equal(google.preinstall, undefined);
   assert.equal(google.singleton, undefined);
   // Web Search is ambient and preinstalled too, and calls Workers AI through its own binding.

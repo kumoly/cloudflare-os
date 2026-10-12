@@ -48,6 +48,10 @@ interface ExpectedArea {
 }
 
 const EXPECTED: Record<string, ExpectedArea> = {
+  "packages/document-runner": {
+    // The execution daemon is started directly by its host wrapper, outside cached tasks.
+    external: ["DOCUMENT_RUNNER_PORT", "DOCUMENT_RUNNER_TOKEN"],
+  },
   "packages/gatekeeper-context": {
     forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
     injected: ["GATEKEEPER_APP_UNMINIFIED"],

@@ -201,6 +201,72 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/context"
       }
     },
+    "gatekeeper-documents": {
+      "bindings": [
+        {
+          "name": "DOCUMENT_RUNNER_URL",
+          "text": "$SECRET(DOCUMENT_RUNNER_URL)",
+          "type": "secret_text"
+        },
+        {
+          "name": "DOCUMENT_RUNNER_TOKEN",
+          "text": "$SECRET(DOCUMENT_RUNNER_TOKEN)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [
+        {
+          "help": "Versioned PDF runner: explicit HTTPS endpoint, or loopback HTTP for local deployments.",
+          "kind": "secret",
+          "label": "Document runner endpoint",
+          "name": "DOCUMENT_RUNNER_URL"
+        },
+        {
+          "help": "Configured out of band on the runner. Do not put this token in workspace files.",
+          "kind": "secret",
+          "label": "Document runner bearer token",
+          "name": "DOCUMENT_RUNNER_TOKEN"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "documents.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "DocumentAccountState",
+            "DocumentsGatekeeper"
+          ],
+          "tag": "v1"
+        }
+      ],
+      "modules": [
+        {
+          "name": "documents.js",
+          "r2Key": "blobs/modules/2e7708d4e29c9d9eac24b33635f675ef5cd6eef6ff8a893fe2ee0c27355680eb",
+          "sha256": "2e7708d4e29c9d9eac24b33635f675ef5cd6eef6ff8a893fe2ee0c27355680eb",
+          "size": 74,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "documents",
+      "singleton": true,
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/documents"
+      }
+    },
     "gatekeeper-email": {
       "bindings": [],
       "compatibilityDate": "2026-09-04",
