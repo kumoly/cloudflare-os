@@ -211,11 +211,15 @@ export class DocumentRunner {
     let response: Response;
     try {
       response = await this.#fetch(new URL(`/v1/scopes/${this.#scope}/jobs${path}`, this.#endpoint), {
-        method, redirect: "error", signal: AbortSignal.timeout(15_000),
+        method, redirect: "manual", signal: AbortSignal.timeout(15_000),
         headers: { Authorization: `Bearer ${this.#token}`, "Content-Type": "application/json" },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       });
     } catch { throw new Error("Document runner is unavailable."); }
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      throw new Error("Document runner redirects are not allowed.");
+    }
     if (!response.ok) {
       await response.body?.cancel();
       if (response.status === 404) throw new Error("Document job is missing or expired.");
@@ -228,10 +232,14 @@ export class DocumentRunner {
     let response: Response;
     try {
       response = await this.#fetch(new URL("/health", this.#endpoint), {
-        redirect: "error", signal: AbortSignal.timeout(5_000),
+        redirect: "manual", signal: AbortSignal.timeout(5_000),
         headers: { Authorization: `Bearer ${this.#token}` },
       });
     } catch { throw new Error("Document runner is unavailable."); }
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      throw new Error("Document runner redirects are not allowed.");
+    }
     if (!response.ok) { await response.body?.cancel(); throw new Error("Document runner health check failed."); }
     let health: Record<string, unknown>;
     try { health = object(JSON.parse(new TextDecoder().decode(await this.#bytes(response, 16_384))) as unknown); }
