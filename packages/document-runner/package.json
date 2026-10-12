@@ -1,0 +1,15 @@
+{
+  "name": "@gadgets/document-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node --check src/server.mjs && node --check src/cli.mjs",
+    "test:run": "node --test src/server.test.mjs",
+    "start": "node src/cli.mjs"
+  },
+  "devDependencies": {
+    "@gadgets/scripts": "workspace:*",
+    "vite-plus": "catalog:"
+  }
+}
