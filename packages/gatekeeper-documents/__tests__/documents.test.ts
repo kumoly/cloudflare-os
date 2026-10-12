@@ -75,6 +75,33 @@ it("preserves the branded global fetch receiver in Workers", async () => {
   expect(await session(runner(fetcher)).getStatus("job-one")).toEqual(job);
 });
 
+it("uses the redirect mode supported by native Workers fetch", async () => {
+  const fetcher: typeof fetch = async function (this: unknown, url: RequestInfo | URL, init?: RequestInit) {
+    if (this !== globalThis) throw new TypeError("Illegal invocation");
+    if (init?.redirect !== "manual") throw new TypeError("Invalid redirect value");
+    return json(String(url).endsWith("/health") ? health : job);
+  };
+  expect(await session(runner(fetcher)).getStatus("job-one")).toEqual(job);
+});
+it("never follows an authenticated runner health redirect", async () => {
+  const fetcher = vi.fn(async () => new Response("redirect", { status: 307,
+    headers: { Location: "https://untrusted.example/collect" } }));
+  await expect(session(runner(fetcher)).start(pdf, { operation: "extract" })).rejects.toThrow("redirects are not allowed");
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher.mock.calls[0][0].toString()).toBe("http://127.0.0.1:8899/health");
+});
+it("never follows an authenticated runner job redirect", async () => {
+  const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(init?.redirect).toBe("manual");
+    return String(url).endsWith("/health") ? json(health) : new Response("redirect", {
+      status: 302, headers: { Location: "https://untrusted.example/collect" },
+    });
+  });
+  await expect(session(runner(fetcher)).getStatus("job-one")).rejects.toThrow("redirects are not allowed");
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher.mock.calls.every(([url]) => String(url).startsWith("http://127.0.0.1:8899/"))).toBe(true);
+});
+
 it("denied observations or revoked accounts transmit no data", async () => {
   const fetcher = vi.fn();
   await expect(session(runner(fetcher), vi.fn(async () => { throw new Error("Denied"); })).start(pdf, { operation: "extract" })).rejects.toThrow("Denied");
