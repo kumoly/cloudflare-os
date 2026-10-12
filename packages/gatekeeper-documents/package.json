@@ -1,0 +1,26 @@
+{
+  "name": "@gadgets/gatekeeper-documents",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "test:run": "vitest run",
+    "deploy": "wrangler deploy",
+    "clean": "rm -rf dist .wrangler"
+  },
+  "dependencies": {
+    "@gadgets/workshop-shared": "workspace:*",
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:"
+  },
+  "devDependencies": {
+    "@gadgets/scripts": "workspace:*",
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "miniflare": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

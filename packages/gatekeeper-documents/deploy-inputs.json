@@ -1,0 +1,14 @@
+[
+  {
+    "name": "DOCUMENT_RUNNER_URL",
+    "kind": "secret",
+    "label": "Document runner endpoint",
+    "help": "Versioned PDF runner: explicit HTTPS endpoint, or loopback HTTP for local deployments."
+  },
+  {
+    "name": "DOCUMENT_RUNNER_TOKEN",
+    "kind": "secret",
+    "label": "Document runner bearer token",
+    "help": "Configured out of band on the runner. Do not put this token in workspace files."
+  }
+]
