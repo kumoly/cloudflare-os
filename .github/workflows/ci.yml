@@ -118,6 +118,12 @@ jobs:
           cache: true
           run-install: true
 
+      # Exercise the real local PDF backend with generated synthetic documents.
+      - name: Install PDF execution tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-jpn
+
       # Codegen, the frontend/SPA bundles, and the repo's single type check (`types:check` aliases this).
       - name: Build
         run: pnpm build
