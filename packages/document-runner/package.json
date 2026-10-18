@@ -1,11 +1,11 @@
 {
   "name": "@gadgets/document-runner",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node --check src/server.mjs && node --check src/cli.mjs",
-    "test:run": "node --test src/server.test.mjs",
+    "build": "node --check src/server.mjs && node --check src/cli.mjs && node --check src/mineru-worker.mjs",
+    "test:run": "node --test src/*.test.mjs && python3 -B -m unittest discover -s src -p \"*_test.py\"",
     "start": "node src/cli.mjs"
   },
   "devDependencies": {

@@ -50,7 +50,7 @@ interface ExpectedArea {
 const EXPECTED: Record<string, ExpectedArea> = {
   "packages/document-runner": {
     // The execution daemon is started directly by its host wrapper, outside cached tasks.
-    external: ["DOCUMENT_RUNNER_PORT", "DOCUMENT_RUNNER_TOKEN"],
+    external: ["DOCUMENT_RUNNER_PORT", "DOCUMENT_RUNNER_TOKEN", "DOCUMENT_MINERU_PYTHON", "DOCUMENT_MINERU_CONFIG"],
   },
   "packages/gatekeeper-context": {
     forwarded: ["VITE_FRONTEND_ERROR_REPORTING"],
