@@ -1,17 +1,20 @@
 import type {
   DocumentImagePage, DocumentJob, DocumentMetadata, DocumentOperation, DocumentOptions,
-  DocumentTextPage,
+  DocumentTextPage, DocumentParsedPage, DocumentParser,
 } from "./types.js";
+
+import { parseDocumentPages, parseDocumentParser } from "./parse-result.js";
 
 /** Maximum input and returned artifact size, independently of the runner's own limits. */
 export const MAX_DOCUMENT_BYTES = 16 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
-const OPERATIONS: DocumentOperation[] = ["inspect", "extract", "render", "ocr"];
+const OPERATIONS: DocumentOperation[] = ["inspect", "extract", "render", "ocr", "parse"];
 const STATUSES = ["queued", "running", "succeeded", "failed", "cancelled"];
 
 /** The bounded, validated result envelope returned by the native runner. */
 export type RunnerJob = DocumentJob & {
-  result?: DocumentMetadata & { textPages?: DocumentTextPage[]; imagePages?: DocumentImagePage[] };
+  result?: DocumentMetadata & { textPages?: DocumentTextPage[]; imagePages?: DocumentImagePage[];
+    parser?: DocumentParser; parsedPages?: DocumentParsedPage[] };
   totalPages?: number;
   nextOffset?: number;
 };
@@ -39,8 +42,11 @@ export function validateOptions(options: DocumentOptions): DocumentOptions {
   if (options.pages !== undefined && (!Array.isArray(options.pages) || !options.pages.length ||
       options.pages.length > 200 || options.pages.some(p => !Number.isInteger(p) || p < 1 || p > 200) ||
       new Set(options.pages).size !== options.pages.length)) throw new TypeError("Invalid pages.");
-  if ((options.operation === "render" || options.operation === "ocr") &&
+  if ((options.operation === "render" || options.operation === "ocr" || options.operation === "parse") &&
       options.pages && options.pages.length > 20) throw new TypeError("Select at most 20 pages.");
+  if (options.operation === "parse" && (options.dpi !== undefined || options.language !== undefined)) {
+    throw new TypeError("Parsing does not accept DPI or OCR language options.");
+  }
   if (options.dpi !== undefined && (!Number.isInteger(options.dpi) || options.dpi < 72 ||
       options.dpi > 144)) throw new TypeError("DPI must be between 72 and 144.");
   if (options.language !== undefined && !/^[a-z_]{2,16}(?:\+[a-z_]{2,16}){0,3}$/.test(options.language)) {
@@ -116,7 +122,10 @@ export function parseRunnerJob(value: unknown): RunnerJob {
     if (operation !== "inspect") {
       if (!Array.isArray(raw.pages) || raw.pages.length > 200) throw new Error("Invalid runner pages.");
       const seen = new Set<number>();
-      if (operation === "render") {
+      if (operation === "parse") {
+        result.parser = parseDocumentParser(raw.parser);
+        result.parsedPages = parseDocumentPages(raw.pages, pageCount);
+      } else if (operation === "render") {
         result.imagePages = raw.pages.map(pageValue => {
           const p = object(pageValue); const page = pageNumber(p.page);
           if (page > pageCount) throw new Error("Invalid runner page count.");
@@ -158,6 +167,7 @@ export class DocumentRunner {
   readonly #scope: string;
   readonly #fetch: typeof fetch;
   #verified = false;
+  #parseReady = false;
   constructor(settings: RunnerSettings, scope: string, fetcher: typeof fetch = fetch) {
     this.#endpoint = runnerEndpoint(settings);
     if (!/^[0-9a-f]{64}$/.test(scope)) throw new Error("Invalid runner namespace.");
@@ -167,6 +177,7 @@ export class DocumentRunner {
     this.#fetch = fetcher.bind(globalThis);
   }
   async start(pdf: Uint8Array, options: DocumentOptions): Promise<RunnerJob> {
+    if (options.operation === "parse") await this.#requireParser();
     return parseRunnerJob(await this.#json("", "POST", { ...options, inputBase64: base64(pdf) }));
   }
   async get(id: string): Promise<RunnerJob> {
@@ -184,6 +195,14 @@ export class DocumentRunner {
         !Number.isInteger(nextOffset) || nextOffset <= offset || nextOffset > totalPages))) {
       throw new Error("Invalid document result pagination.");
     }
+    if (operation === "parse") {
+      const count = job.result?.parsedPages?.length ?? 0;
+      if (totalPages > 20 || totalPages > (job.result?.pageCount ?? 0) || count > limit ||
+          count !== Math.min(limit, Math.max(0, totalPages - offset)) ||
+          (nextOffset !== undefined ? nextOffset !== offset + count : offset + count < totalPages)) {
+        throw new Error("Invalid document result pagination.");
+      }
+    }
     return { ...job, totalPages, ...(nextOffset !== undefined ? { nextOffset } : {}) };
   }
   async cancel(id: string): Promise<RunnerJob> {
@@ -192,6 +211,8 @@ export class DocumentRunner {
   }
   async retry(id: string): Promise<RunnerJob> {
     validateId(id);
+    const previous = await this.get(id);
+    if (previous.operation === "parse") await this.#requireParser();
     return parseRunnerJob(await this.#json(`/${id}/retry`, "POST"));
   }
   async artifact(id: string, artifactId: string): Promise<Uint8Array> {
@@ -227,8 +248,14 @@ export class DocumentRunner {
     }
     return response;
   }
-  async #verify(): Promise<void> {
-    if (this.#verified) return;
+  async #requireParser(): Promise<void> {
+    await this.#verify(true);
+    if (!this.#parseReady) throw new Error("Document parser is unavailable or not ready.");
+  }
+  async #verify(refresh = false): Promise<void> {
+    if (this.#verified && !refresh) return;
+    this.#verified = false;
+    this.#parseReady = false;
     let response: Response;
     try {
       response = await this.#fetch(new URL("/health", this.#endpoint), {
@@ -244,10 +271,16 @@ export class DocumentRunner {
     let health: Record<string, unknown>;
     try { health = object(JSON.parse(new TextDecoder().decode(await this.#bytes(response, 16_384))) as unknown); }
     catch { throw new Error("Invalid document runner health response."); }
-    if (health.version !== "1.0.0") throw new Error("Unsupported document runner version.");
+    if (health.version !== "1.0.0" && health.version !== "1.1.0") throw new Error("Unsupported document runner version.");
     const capabilities = object(health.capabilities);
     if (!["pdfinfo", "pdftotext", "pdftoppm", "tesseract"].every(key => capabilities[key] === true)) {
       throw new Error("Document runner is missing required PDF tools.");
+    }
+    if (health.version === "1.1.0") {
+      if (!Array.isArray(health.features) || health.features.length > 32 ||
+          health.features.some(feature => typeof feature !== "string" || feature.length > 64) ||
+          typeof health.parseReady !== "boolean") throw new Error("Invalid document runner features.");
+      this.#parseReady = health.features.includes("parse") && health.parseReady;
     }
     this.#verified = true;
   }
