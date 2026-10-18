@@ -103,10 +103,19 @@ User DO reset drops its subscription. When the service answers `device_gone` or
 `invalid_subscription`, the User DO drops that subscription; the device subscribes again when its
 app next opens. Any other failure, including `invalid_signature`, keeps it. Only turns a person
 started announce completion; callback turns, such as a schedule, and spawned agents notify only
-when they need the user's permission. A turn that an approval or accepted connection resumes
-belongs to whoever decided: it runs on their model and account, so its notifications go to them.
+when they need the user's permission. A turn resumed by an approval or accepted connection keeps
+its original initiator's model, account and notification recipient, as well as whether it was a
+callback turn; the decision does not transfer ownership. Pauses created by older code have no
+retained execution record, so their first decision instead adopts the deciding person's account
+and notifications, matching the older behavior.
 The deep link opens the chat with `showChat`, which leaves full-screen preview and switches a phone
 showing the workspace's app to the chat.
+
+A user can mute a workspace, for a while or until they unmute it, from its menu in the sidebar, the
+workspace list, or the editor's menu on a phone. The mute lives on that workspace's record in the
+user's own User DO (`notificationMute`), so it applies only to them and is deleted with the record.
+While it lasts, the User DO sends the workspace's finished tasks to no tab and no device. Permission
+requests still come through, since a task waiting on the user stays stuck until they answer.
 
 ## Deployment contract
 

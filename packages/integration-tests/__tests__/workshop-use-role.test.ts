@@ -84,7 +84,6 @@ type UseSurface = "getMetadata" | "subscribeToMetadata" | "subscribeToPresence" 
 const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurface>,
     (ws: RpcStub<Overseer>) => unknown> = {
   setTitle: ws => ws.setTitle("Title"),
-  setPinned: ws => ws.setPinned(true),
   deleteSelf: ws => ws.deleteSelf(),
   createGadget: ws => ws.createGadget("App"),
   listTree: ws => ws.listTree(COMMIT),
@@ -123,10 +122,8 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   listSlashCommands: ws => ws.listSlashCommands(),
   newChat: ws => ws.newChat("Hello", null),
   sendChatMessage: ws => ws.sendChatMessage(1, "Hello", null),
-  uploadChatAttachment: ws =>
-    ws.uploadChatAttachment({ mimeType: "text/plain", content: new Uint8Array() }, null),
+  uploadBlob: ws => ws.uploadBlob(new Uint8Array()),
   getChatAttachmentContent: ws => ws.getChatAttachmentContent(1, "attachment"),
-  deleteChatAttachment: ws => ws.deleteChatAttachment("attachment"),
   setChatTitle: ws => ws.setChatTitle(1, "Title"),
   mergeChanges: ws => ws.mergeChanges(1),
   updateChatFromMainline: ws => ws.updateChatFromMainline(1),

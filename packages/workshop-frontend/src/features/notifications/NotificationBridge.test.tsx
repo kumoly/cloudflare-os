@@ -9,6 +9,7 @@ import type {
   AuthenticatedApi, NotificationSubscriber, UserNotification,
 } from "@gadgets/workshop-shared/api";
 import { NotificationBridge } from "./NotificationBridge";
+import { reportVisibleChat } from "./visibleChat";
 
 const addToast = vi.fn<(options: { actions: { onClick: () => void }[] }) => void>();
 const router = { navigate: vi.fn<(options: object) => void>() };
@@ -125,6 +126,17 @@ describe("NotificationBridge", () => {
     });
   });
 
+  it("does not announce a task whose chat is on screen", async () => {
+    await render();
+    const withdraw = reportVisibleChat(() => ({ workspaceId: "workspace-1", chatId: 1 }));
+    await act(() => subscribers[0].notify(notification));
+    expect(addToast).not.toHaveBeenCalled();
+
+    await act(() => subscribers[0].notify({ ...notification, chatId: 2 }));
+    expect(addToast).toHaveBeenCalledOnce();
+    withdraw();
+  });
+
   it("registers the native app's device and reports the outcome", async () => {
     let postMessage = vi.fn<(message: { type: string }) => void>();
     Object.assign(window, {
@@ -138,6 +150,64 @@ describe("NotificationBridge", () => {
     expect(authenticatedApi.registerNotificationDevice).toHaveBeenCalledWith("registration-1");
     expect(postMessage).toHaveBeenCalledWith({ type: "ready" });
     Reflect.deleteProperty(window, "webkit");
+  });
+
+  it("uses notification controls on the versioned native bridge", async () => {
+    let request = vi.fn<() => void>();
+    let finished = vi.fn<(outcome: "ready" | "failed") => void>();
+    Object.assign(window, {
+      cloudflareOSNative: {
+        version: 1,
+        isAvailable: () => true,
+        loginReady: () => {},
+        returnToInstalls: () => {},
+        notifications: {
+          currentDeviceRegistration: () => "registration-2",
+          requestDeviceRegistration: request,
+          registrationFinished: finished,
+        },
+      },
+    });
+    await render();
+    expect(authenticatedApi.registerNotificationDevice).toHaveBeenCalledWith("registration-2");
+    expect(finished).toHaveBeenCalledWith("ready");
+    expect(request).not.toHaveBeenCalled();
+    Reflect.deleteProperty(window, "cloudflareOSNative");
+  });
+
+  it("does not redeem a versioned one-use registration again during an RPC reconnect", async () => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    let failRegistration!: (reason: Error) => void;
+    const pending = new Promise<void>((_resolve, reject) => { failRegistration = reject; });
+    authenticatedApi.registerNotificationDevice.mockReturnValue(pending);
+    const finished = vi.fn<(outcome: "ready" | "failed") => void>();
+    Object.assign(window, {
+      cloudflareOSNative: {
+        version: 1,
+        isAvailable: () => true,
+        loginReady: () => {},
+        returnToInstalls: () => {},
+        notifications: {
+          currentDeviceRegistration: () => "registration-reconnect",
+          requestDeviceRegistration: vi.fn<() => void>(),
+          registrationFinished: finished,
+        },
+      },
+    });
+
+    await render();
+    const firstApi = authenticatedApi;
+    authenticatedApi = {
+      ...authenticatedApi,
+      registerNotificationDevice: vi.fn<(id: string) => Promise<void>>().mockResolvedValue(),
+    };
+    await render();
+    expect(firstApi.registerNotificationDevice).toHaveBeenCalledOnce();
+    expect(authenticatedApi.registerNotificationDevice).not.toHaveBeenCalled();
+
+    await act(async () => failRegistration(new Error("registration expired")));
+    expect(finished).toHaveBeenCalledExactlyOnceWith("failed");
+    Reflect.deleteProperty(window, "cloudflareOSNative");
   });
 
   it("asks the native app for a registration once, not again on reconnect", async () => {

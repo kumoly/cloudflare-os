@@ -1,11 +1,14 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
 import deployed from "./cloudflare.config.ts";
 
 const { compatibilityDate, compatibilityFlags } = deployed.worker;
 
-/** Workerd coverage for nested Drive sessions, Slides sessions, the Google Doc Durable Object, and creating files. */
+/**
+ * Workerd coverage for nested Drive sessions, Sheets and Slides sessions, the Google Doc Durable
+ * Object, and creating files.
+ */
 export default defineConfig({
   plugins: [
     capnwebValidate(),
@@ -26,10 +29,13 @@ export default defineConfig({
     }),
   ],
   test: {
+    testTimeout: 15_000,
     include: [
       "__tests__/workerd/google-doc-actions.test.ts",
       "__tests__/workerd/google-file-creation.test.ts",
       "__tests__/workerd/native-sessions.test.ts",
+      "__tests__/workerd/sheets-actions.test.ts",
+      "__tests__/workerd/sheets-session.test.ts",
       "__tests__/workerd/slides-actions.test.ts",
       "__tests__/workerd/slides-session.test.ts",
     ],

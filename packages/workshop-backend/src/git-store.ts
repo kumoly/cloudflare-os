@@ -25,21 +25,25 @@
 // - Loose objects only, one collection record per object, keyed by oid. isomorphic-git never
 //   writes deltified data (it only reads deltas in packfiles fetched from remotes), so each
 //   record is a zlib'd whole object. Dedup comes from content addressing, not deltas.
-// - No object exceeds ~2MB today (records hold single source files, small trees, and commit
-//   headers). If large blobs ever appear, chunking records or spilling to R2 is a change local
-//   to the fs shim below.
-// - No GC. Dangling objects are only created by accepted merges, imports, migration, loading
-//   a blueprint's release (whose objects are stored whether or not anything comes to refer to
+// - Remote and raw-byte ingress are bounded to MAX_GIT_OBJECT_SIZE. Existing text writes keep
+//   their storage-record cap on the deflated object: a file whose blob doesn't fit throws an
+//   error naming it (see `#writeFileBlob`). Every caller writes objects before moving any
+//   record to name them, so a failure only leaves earlier objects dangling. Larger-file
+//   storage is deferred; every object here uses the same ordinary loose-object format.
+// - No GC. Uploads and discarded raw-byte writes can leave blobs dangling, as can accepted
+//   merges, imports, migration, loading a blueprint's release (whose objects are stored whether
+//   or not anything comes to refer to
 //   them), and the merge commits of a chat that is then discarded (an update from mainline
 //   commits the chat's files and the merge result, see updateChatFromMainline, and applying a
-//   blueprint commits its merge, see applyBlueprint) -- never by a chat's edits -- and are
-//   cheap. If GC is ever needed, the roots are
+//   blueprint commits its merge, see applyBlueprint). A future GC needs a retention policy for
+//   uploaded-but-unreferenced blobs. Its roots are
 //   enumerable: gadget records (their heads and the blueprint releases they follow), blueprint
 //   gadget records (the commits they exported and the releases minted from those), live chats'
 //   pinned commits, the pin declarations in chat logs and compaction checkpoints (closed epochs
 //   are reconstructed from them), and the `observedOid` blob stamps (and legacy `observedCommit`
-//   stamps) on chats' readFile tool calls (which nothing else roots -- a future GC must either
-//   root them or the agent's replay must tolerate a missing object by eliding the read).
+//   stamps) on chats' readFile tool calls, attachment originals, and whole-file `setBytes`
+//   references in live chat changes. A future GC must root read stamps or let agent replay
+//   tolerate a missing object by eliding the read.
 
 import {
   Errors,
@@ -56,10 +60,11 @@ import {
 import diff3Merge from "diff3";
 import type { Collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
-import { MAX_FILE_TEXT_LENGTH } from "@gadgets/workshop-shared/code-change";
 import type { GitObjectRecord } from "./storage-schema/overseer-storage";
-import { MAX_GIT_OBJECT_SIZE } from "./git-cache";
+import { decodeBlobText, MAX_GIT_OBJECT_SIZE } from "./git-cache";
+import type { BytesRef, FileContent } from "@gadgets/workshop-shared/code-change";
 import {
+  decodeLooseObject,
   encodeGitCommit,
   encodeLooseObject,
   gitObjectOid,
@@ -202,7 +207,7 @@ export interface WriteCommitOptions {
 }
 
 // A parsed-but-unwritten tree: file contents at the leaves, subtrees within.
-type TreeNode = Map<string, TreeNode | string>;
+type TreeNode = Map<string, TreeNode | FileContent>;
 
 /**
  * A git object database over a `gitObjects` collection.
@@ -224,14 +229,43 @@ export class GitStore {
     this.#fs = makeGitObjectsFs(objects);
   }
 
+  /** Store a bounded raw payload as an ordinary Git blob, returning its immutable reference. */
+  async writeBlob(content: Uint8Array): Promise<BytesRef> {
+    if (content.byteLength > MAX_GIT_OBJECT_SIZE) {
+      throw new Error(`Git blob is too large to store (over ${MAX_GIT_OBJECT_SIZE} bytes).`);
+    }
+    try {
+      const oid = await writeBlob({fs: this.#fs, gitdir: GITDIR, blob: content});
+      return {oid, byteLength: content.byteLength};
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("SQLITE_TOOBIG")) {
+        throw new Error("Git blob is too large to store.", {cause: err});
+      }
+      throw err;
+    }
+  }
+
+  /** Read a local Git blob by its OID capability, optionally checking a whole-file OT's length. */
+  readBlob(oid: string, byteLength?: number): Uint8Array {
+    const record = this.#objects.get(oid);
+    if (!record) throw new Error("Unknown Git blob.");
+    const object = decodeLooseObject(record.data);
+    if (object.type !== "blob") throw new Error("Git object is not a blob.");
+    if (byteLength !== undefined && object.payload.byteLength !== byteLength) {
+      throw new Error("Git blob length does not match its reference.");
+    }
+    return object.payload;
+  }
+
   /**
    * Writes `files` (a `path -> text` map) as a commit, returning the commit oid. All objects are
    * content-addressed, so rewriting identical content is a cheap no-op that produces the same
    * oids.
    */
   async writeFilesAsCommit(
-      files: ReadonlyMap<string, string>, options: WriteCommitOptions): Promise<string> {
-    return await this.writeCommitForTree(await this.#writeTreeNode(buildTreeNode(files)), options);
+      files: ReadonlyMap<string, FileContent>, options: WriteCommitOptions): Promise<string> {
+    return await this.writeCommitForTree(
+        await this.#writeTreeNode(buildTreeNode(files), ""), options);
   }
 
   /**
@@ -342,7 +376,7 @@ export class GitStore {
    * pruned, as git requires.
    */
   async writeChangedFilesAsCommit(
-      changes: ReadonlyMap<string, string | null>,
+      changes: ReadonlyMap<string, FileContent | null>,
       options: WriteCommitOptions & { treeBase: string }): Promise<string> {
     return await this.writeCommitForTree(
         await this.writeChangedTree(options.treeBase, changes), options);
@@ -357,7 +391,7 @@ export class GitStore {
    * to write any commit at all.
    */
   async writeChangedTree(
-      treeBase: string, changes: ReadonlyMap<string, string | null>): Promise<string> {
+      treeBase: string, changes: ReadonlyMap<string, FileContent | null>): Promise<string> {
     let baseTree = await this.commitTree(treeBase);
     // No changes: the base's tree, by oid. Rebuilding reads each tree it descends into, and this
     // store holds only what has been pulled -- a worktree committed untouched may never have
@@ -428,11 +462,7 @@ export class GitStore {
             (base.type !== "blob" || (base.mode !== "100644" && base.mode !== "100755"))) {
           throw new Error(`cannot write ${path}: not a regular file`);
         }
-        let oid = await writeBlob({
-          fs: this.#fs,
-          gitdir: GITDIR,
-          blob: new TextEncoder().encode(child),
-        });
+        let oid = await this.#writeFileBlob(path, child);
         // A changed file keeps its base entry's mode; only new files default to 100644.
         entries.set(name, { mode: base?.mode ?? "100644", path: name, oid, type: "blob" });
       }
@@ -441,23 +471,37 @@ export class GitStore {
     return await writeTree({ fs: this.#fs, gitdir: GITDIR, tree: [...entries.values()] });
   }
 
-  async #writeTreeNode(node: TreeNode): Promise<string> {
+  async #writeTreeNode(node: TreeNode, prefix: string): Promise<string> {
     let entries: TreeEntry[] = [];
     for (let [name, child] of node) {
-      if (typeof child === "string") {
-        let oid = await writeBlob({
-          fs: this.#fs,
-          gitdir: GITDIR,
-          blob: new TextEncoder().encode(child),
-        });
+      if (!(child instanceof Map)) {
+        let oid = await this.#writeFileBlob(prefix + name, child);
         entries.push({ mode: "100644", path: name, oid, type: "blob" });
       } else {
-        let oid = await this.#writeTreeNode(child);
+        let oid = await this.#writeTreeNode(child, `${prefix}${name}/`);
         entries.push({ mode: "040000", path: name, oid, type: "tree" });
       }
     }
     // isomorphic-git sorts entries into git's canonical tree order itself.
     return await writeTree({ fs: this.#fs, gitdir: GITDIR, tree: entries });
+  }
+
+  // Writes a file's text as a blob. The size limit is storage's own, on the deflated object; this
+  // only names the file in the error, and says what to do about it.
+  async #writeFileBlob(path: string, text: FileContent): Promise<string> {
+    if (typeof text !== "string") {
+      this.readBlob(text.oid, text.byteLength);
+      return text.oid;
+    }
+    try {
+      return await writeBlob({ fs: this.#fs, gitdir: GITDIR, blob: new TextEncoder().encode(text) });
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("SQLITE_TOOBIG")) {
+        throw new Error(`${path} is too large to store. Split it into smaller files (for ` +
+            `example, by moving code into modules it imports).`, { cause: err });
+      }
+      throw err;
+    }
   }
 
   async #collectTreeFiles(
@@ -469,9 +513,8 @@ export class GitStore {
       if (entry.type === "tree") {
         await this.#collectTreeFiles(entry.oid, `${path}/`, out);
       } else if (entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755")) {
-        let { blob } = await readBlob(
-            { fs: this.#fs, gitdir: GITDIR, oid: entry.oid, cache: this.#cache });
-        out.set(path, new TextDecoder().decode(blob));
+        const {blob} = await readBlob({ fs: this.#fs, gitdir: GITDIR, oid: entry.oid, cache: this.#cache });
+        out.set(path, decodeBlobText(blob, path));
       } else {
         throw new Error(`unsupported tree entry at ${path}: mode ${entry.mode}`);
       }
@@ -481,11 +524,11 @@ export class GitStore {
 
 // A parsed-but-unwritten change set: new file contents (or null = delete) at the leaves,
 // touched subtrees within. The writeChangedFilesAsCommit analog of TreeNode.
-type ChangeNode = Map<string, ChangeNode | string | null>;
+type ChangeNode = Map<string, ChangeNode | FileContent | null>;
 
 // Converts a flat `path -> text | null` change map into nested nodes, with the same path-shape
 // validation as buildTreeNode.
-function buildChangeNode(changes: ReadonlyMap<string, string | null>): ChangeNode {
+function buildChangeNode(changes: ReadonlyMap<string, FileContent | null>): ChangeNode {
   let root: ChangeNode = new Map();
   for (let [path, content] of changes) {
     let segments = path.split("/");
@@ -516,7 +559,7 @@ function buildChangeNode(changes: ReadonlyMap<string, string | null>): ChangeNod
 // Converts a flat `path -> text` map into nested tree nodes, validating path shape as we go:
 // git can't represent empty segments or "."/"..", and a path can't be both a file and a
 // directory.
-function buildTreeNode(files: ReadonlyMap<string, string>): TreeNode {
+function buildTreeNode(files: ReadonlyMap<string, FileContent>): TreeNode {
   let root: TreeNode = new Map();
   for (let [path, content] of files) {
     let segments = path.split("/");
@@ -534,7 +577,7 @@ function buildTreeNode(files: ReadonlyMap<string, string>): TreeNode {
         if (existing === undefined) {
           existing = new Map();
           node.set(segment, existing);
-        } else if (typeof existing === "string") {
+        } else if (!(existing instanceof Map)) {
           throw new Error(`conflicting file paths at: ${path}`);
         }
         node = existing;
@@ -584,25 +627,6 @@ export interface MergeResult {
    * markers; delete-vs-modify conflicts keep the modified content with no markers.
    */
   conflictPaths: string[];
-
-  /**
-   * Paths that both sides changed where a version of the file, or what merging them would
-   * produce, is too large to hold (see `tooLargeToHold()`), in sorted order. These are not
-   * merged and are absent from `files`, so a result with any is not a merge: callers refuse it.
-   */
-  tooLargePaths: string[];
-}
-
-/**
- * Whether a file's text is too large to hold as a gadget's file: longer than a chat's file may
- * be (`MAX_FILE_TEXT_LENGTH`; an edit that leaves a file longer is refused), or a blob larger
- * than the git cache reads back (`MAX_GIT_OBJECT_SIZE`).
- */
-export function tooLargeToHold(text: string): boolean {
-  if (text.length > MAX_FILE_TEXT_LENGTH) return true;
-  // A UTF-16 code unit takes at most three bytes of UTF-8, so only a long text needs encoding.
-  return text.length * 3 > MAX_GIT_OBJECT_SIZE &&
-      new TextEncoder().encode(text).byteLength > MAX_GIT_OBJECT_SIZE;
 }
 
 /**
@@ -623,9 +647,7 @@ export function tooLargeToHold(text: string): boolean {
  * - deleted on one side, changed on the other: the changed content survives, reported as a
  *   conflict;
  * - changed on both sides (including both-added): line merged via diff3, conflicting hunks
- *   marked -- unless any of the three versions, or the merged text, is too large to hold, in
- *   which case the file is reported in `tooLargePaths` instead. A file taken whole from one
- *   side is no larger than it was there, so it is never checked.
+ *   marked.
  */
 export function threeWayMerge(
     base: ReadonlyMap<string, string>,
@@ -634,7 +656,6 @@ export function threeWayMerge(
     labels: MergeLabels = {}): MergeResult {
   let files = new Map<string, string>();
   let conflictPaths: string[] = [];
-  let tooLargePaths: string[] = [];
 
   let allPaths = [...new Set([...base.keys(), ...ours.keys(), ...theirs.keys()])].toSorted();
   for (let path of allPaths) {
@@ -657,23 +678,14 @@ export function threeWayMerge(
       conflictPaths.push(path);
     } else {
       // Changed on both sides (b === undefined means both-added with different content; diff3
-      // against an empty base marks the entirety of both sides as conflicting). A conflicted
-      // result holds both sides and the base, so it can be too large where none of them is.
-      if ([b ?? "", o, t].some(tooLargeToHold)) {
-        tooLargePaths.push(path);
-        continue;
-      }
+      // against an empty base marks the entirety of both sides as conflicting).
       let merged = mergeText(b ?? "", o, t, labels);
-      if (tooLargeToHold(merged.text)) {
-        tooLargePaths.push(path);
-        continue;
-      }
       files.set(path, merged.text);
       if (!merged.clean) conflictPaths.push(path);
     }
   }
 
-  return { files, conflictPaths, tooLargePaths };
+  return { files, conflictPaths };
 }
 
 // A zero-width boundary after every "\n"; split() then keeps each terminator with its line.

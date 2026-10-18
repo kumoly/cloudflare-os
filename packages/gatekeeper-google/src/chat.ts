@@ -51,7 +51,7 @@ import type {
 } from "./chat-types";
 import type { ChatMessageRaw } from "./chat-api";
 import type { ChatHookDelivery, ChatHookParams, ChatMessageHookTarget } from "./chat-hooks";
-import { pushHooksConfigured, type PushHooksEnv } from "./pubsub-push";
+import { chatHooksConfigured, type PushHooksEnv } from "./pubsub-push";
 import { getGoogleAccountProfile } from "./google-api";
 import { AccessTokenCache } from "./auth-retry";
 import { CursorPager, CursorPagerOptions } from "./cursor";
@@ -594,9 +594,9 @@ async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise
       }
       return;
     case "updatedMessage": {
-      const { text } = await api.getMessage(info.messageName);
-      if (text === info.text) await api.updateMessageText(info.messageName, info.previousText);
-      else if (text !== info.previousText) {
+      const { formattedText } = await api.getMessage(info.messageName);
+      if (formattedText === info.text) await api.updateMessageText(info.messageName, info.previousText);
+      else if (formattedText !== info.previousText) {
         return {
           message: "This message was edited again after this change, so it can't be undone " +
             "automatically. Edit it in Google Chat.",
@@ -682,14 +682,18 @@ const MAX_CONVERSATION_PEOPLE = 49;
 
 const LEAVE_YOURSELF_OUT = "Leave yourself out: you are in every conversation you send to.";
 
-const peopleNames = (people: readonly ChatPerson[]) =>
-  participantNames(people.map(person => person.name ?? person.email));
+const peopleNames = (people: ChatNewConversation["members"]) =>
+  participantNames(people.map(person => person.name ?? person.email ?? person.id));
+
+const personLabel = (person: ChatNewConversation["members"][number]) => person.name
+  ? person.email ? `${person.name} <${person.email}>` : `${person.name} (${person.id})`
+  : person.email ?? person.id;
 
 /**
  * Queue a message to exactly these people, in their existing direct message or group chat, or
- * else in one created when the message is approved. Only people in the connected account's
- * directory can be put in a new conversation: an agent that reads the owner's mail must not be
- * able to open a channel to an outsider of its choosing.
+ * else in one created when the message is approved. An email address must resolve in the connected
+ * account's directory; Google accepts an opaque user id for a new conversation only when that user
+ * belongs to the same Workspace organization.
  */
 async function queueDirectMessage(
   ctx: ChatContext, people: readonly string[], text: string,
@@ -718,13 +722,10 @@ async function queueDirectMessage(
     : `No ${kind} exists with exactly ${users.join(", ")}.`);
   if (existing) return queueChatMessage(ctx, existing.spaceName, body, { recipients: existing.ids });
 
-  const emails = users.map(user => user.slice("users/".length));
-  const unnamed = emails.find(email => !email.includes("@"));
-  if (unnamed !== undefined) {
-    throw new Error(`To start a new conversation, name each person by email address, which ${unnamed} ` +
-      "is not. searchPeople() finds them.");
-  }
-  const members: ChatPerson[] = [];
+  const members: ChatNewConversation["members"] = users
+    .filter(user => !user.includes("@"))
+    .map(id => ({ id }));
+  const emails = users.filter(user => user.includes("@")).map(user => user.slice("users/".length));
   const outside: string[] = [];
   // One at a time: up to 49 concurrent lookups would burst the People API's per-user quota.
   for (const email of emails) {
@@ -732,12 +733,17 @@ async function queueDirectMessage(
     if (!person) outside.push(email);
     else if (!members.some(member => member.id === person.id)) members.push(person);
   }
-  await observe(ctx, "Look up people in the Google Workspace directory",
-    `Checked whether ${emails.length} email address(es) belong to people in the organization's ` +
-    `directory; ${outside.length} did not.`);
+  if (emails.length > 0) {
+    await observe(ctx, "Look up people in the Google Workspace directory",
+      `Checked whether ${emails.length} email address(es) belong to people in the organization's ` +
+      `directory; ${outside.length} did not.`);
+  }
   if (outside.length > 0) {
     throw new Error(`${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not in your organization's ` +
       "directory, and new Google Chat conversations can only include people who are.");
+  }
+  if (members.length !== users.length) {
+    throw new Error("Name each person once, using either their email address or users/{id}, not both.");
   }
   if (members.some(member => member.id === ctx.self.id)) throw new Error(LEAVE_YOURSELF_OUT);
 
@@ -758,7 +764,7 @@ async function queueDirectMessage(
     ...buildDescription(
       `Create a ${one ? "direct message" : "group chat"} between ${userLabel(ctx.self)} and ` +
       `${one ? "this person" : `these ${members.length} people`}, and post this message in it.`)
-      .list("People", members.map(member => member.name ? `${member.name} <${member.email}>` : member.email))
+      .list("People", members.map(personLabel))
       .verbatim("Message", body)
       .finish(),
     implementsRevert: true,
@@ -1191,12 +1197,12 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     }
     await submitChatAction(this.ctx, {
       type: "updateMessage", messageName: current.id, spaceName: current.spaceId,
-      previousText: current.text, text: body, submittedAt: Date.now(),
+      previousText: current.formattedText, text: body, submittedAt: Date.now(),
     }, {
       title: `Edit a Google Chat message in ${current.spaceId}`,
       ...buildDescription(
         `Replace the text of message ${current.id}, sent by ${userLabel(current.sender)}.`)
-        .verbatim("Current", current.text)
+        .verbatim("Current", current.formattedText)
         .verbatim("New", body)
         .finish(),
       implementsRevert: true,
@@ -1536,7 +1542,7 @@ export class GoogleChatGatekeeperImpl
     queue: SharedApprovalQueue, self: ChatUser, spaceName: string, threadName: string | undefined,
     hook: RpcStub<ChatMessageHookTarget>,
   ): Promise<void> {
-    if (!pushHooksConfigured(this.env)) {
+    if (!chatHooksConfigured(this.env)) {
       throw new Error("Google Chat hooks are not configured on this deployment.");
     }
     const params: ChatHookParams = { spaceName, ...(threadName !== undefined ? { threadName } : {}) };
@@ -1683,7 +1689,7 @@ export class GoogleChatGatekeeperImpl
           throw error;
         }
         store.setSentMessage(actionId, created);
-        store.rebaseEdits(spaceName, created.id, action.text, created.text);
+        store.rebaseEdits(spaceName, created.id, action.text, created.formattedText);
         return { type: "sentMessage", messageName: created.id };
       }
       case "updateMessage": {
@@ -1693,7 +1699,7 @@ export class GoogleChatGatekeeperImpl
           other.type === "updateMessage" && other.messageName === target.committed);
         const current = await readTarget(target.committed);
         requireMessageInScope(scope, current);
-        let text = current.text;
+        let text = current.formattedText;
         if (text === action.text && !retried) return { type: "none" };
         if (text !== action.text) {
           // A retry can't tell Chat's rendering of its own lost write from an outside edit.

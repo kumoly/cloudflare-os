@@ -4,9 +4,7 @@ import { DownloadSimple, GitBranch, List } from '@phosphor-icons/react'
 import type {
   FileAtCommit, Overseer, WorkpieceId, WorkpieceSummary,
 } from '@gadgets/workshop-shared/api'
-import {
-  MAX_FILE_TEXT_LENGTH, type CodeChange, type FileChange, type TextChange,
-} from '@gadgets/workshop-shared/code-change'
+import type { CodeChange, FileChange, TextChange } from '@gadgets/workshop-shared/code-change'
 import { RpcStub } from 'capnweb'
 import FileBrowser, { isOpenableKind, type ExpandedDirs, type FileBrowserHandle } from './FileBrowser'
 import { WorkshopButton, WorkshopIconButton } from '../../components/WorkshopControls'
@@ -370,7 +368,7 @@ export default function WorkpieceCodeInterface({
                 activeOverlayRef.current = null
               }
               dispatchFileChange(event.gadgetId, event.path,
-                clientText !== undefined ? { set: clientText } : { remove: true })
+                typeof clientText === 'string' ? { set: clientText } : { remove: true })
               retryPreviewAttachRef.current?.()
               continue
             }
@@ -412,7 +410,7 @@ export default function WorkpieceCodeInterface({
               // client -- the incremental change's offsets are against the client's pre-row
               // content, not the previewed document -- and re-anchor the preview on top.
               dispatchFileChange(event.gadgetId, event.path,
-                text !== undefined ? { set: text } : { remove: true })
+                typeof text === 'string' ? { set: text } : { remove: true })
               retryPreviewAttachRef.current?.()
               continue
             }
@@ -513,7 +511,7 @@ export default function WorkpieceCodeInterface({
       const files = client.getFiles(gadgetId)
       if (files !== undefined) {
         const text = files.get(path)
-        if (text !== undefined) return { text }
+        if (text !== undefined) return typeof text === 'string' ? { text } : {}
         if (client.getRemovedPaths(gadgetId).has(path)) return {}
       }
       if (gadgetId !== workpieceIdRef.current) return undefined
@@ -820,7 +818,7 @@ export default function WorkpieceCodeInterface({
   // chat's, or -- for a path the chat removed -- null. Undefined means the path is untouched
   // and its text is the content base's (readDisplayedText and the active-file resolution below
   // complete the picture).
-  const overlayText = (path: string): string | undefined | null => {
+  const overlayText = (path: string): ReturnType<import('./otClient').ChatContentSnapshot> => {
     const preview = previewOverrides.get(path)
     if (preview !== undefined) return preview
     if (chatFiles !== undefined) {
@@ -1146,7 +1144,7 @@ export default function WorkpieceCodeInterface({
         const files = client.getFiles(gadgetId)
         if (files !== undefined) {
           const text = files.get(path)
-          if (text !== undefined) return text
+          if (text !== undefined) return typeof text === 'string' ? text : undefined
           if (client.getRemovedPaths(gadgetId).has(path)) return undefined
         }
         const base = contentBaseRef.current
@@ -1216,7 +1214,7 @@ export default function WorkpieceCodeInterface({
   // unreadable).
   const readDisplayedText = async (filename: string): Promise<string | null> => {
     const overlaid = overlayText(filename)
-    if (overlaid !== undefined) return overlaid
+    if (overlaid !== undefined) return typeof overlaid === 'string' ? overlaid : null
     return readBaseText(filename)
   }
 
@@ -1252,14 +1250,16 @@ export default function WorkpieceCodeInterface({
     // Only a plain file can be renamed: the browser withholds the action from other kinds (see
     // FileBrowser for why an executable is among them), and this is the backstop.
     if (leafKindOf(oldName) !== 'file') return
+    if (!fileExists(oldName)) {
+      toasts.add({ title: 'File not found', variant: 'error' })
+      return
+    }
     if (fileExists(newName)) {
       toasts.add({ title: `File already exists: ${newName}`, variant: 'error' })
       return
     }
     const target = { client, gadgetId: workpieceId, contentBase }
-    const baseText = fileExists(oldName)
-      ? await readDisplayedText(oldName).catch(() => null)
-      : null
+    const baseText = await readDisplayedText(oldName).catch(() => null)
     // The read may have outlasted the selection: applyLocalFileChanges targets the *current*
     // gadget, and this rename belongs to the one it started on.
     if (target.client === null || clientRef.current !== target.client ||
@@ -1271,10 +1271,13 @@ export default function WorkpieceCodeInterface({
     // source text as the chat holds it *now* -- the read is only right while the path is still
     // untouched -- and refuse a destination that has since come to exist.
     const chatFilesNow = target.client.getFiles(target.gadgetId)
-    const text = chatFilesNow?.get(oldName) ??
-      (target.client.getRemovedPaths(target.gadgetId).has(oldName) ? null : baseText)
-    if (text === null) {
+    if (!chatFilesNow?.has(oldName) && target.client.getRemovedPaths(target.gadgetId).has(oldName)) {
       toasts.add({ title: 'File not found', variant: 'error' })
+      return
+    }
+    const text = chatFilesNow?.get(oldName) ?? baseText
+    if (typeof text !== 'string') {
+      toasts.add({ title: 'Only text files can be renamed in this editor', variant: 'error' })
       return
     }
     if (chatFilesNow?.has(newName) || fileExists(newName)) {
@@ -1369,18 +1372,18 @@ export default function WorkpieceCodeInterface({
   if (activeFile !== null) {
     const overlaid = overlayText(activeFile)
     if (overlaid !== undefined) {
-      activeResolved = overlaid !== null ? { kind: 'text', text: overlaid } : { kind: 'absent' }
+      activeResolved = overlaid === null ? { kind: 'absent' }
+        : typeof overlaid === 'string' ? { kind: 'text', text: overlaid }
+        : { kind: 'unreadable', message: 'Binary content cannot be displayed in the text editor.' }
     } else if (contentBase !== undefined) {
       activeResolved = activeBaseFiles.get(activeFile)
     }
   }
   const activeFileText = activeResolved?.kind === 'text' ? activeResolved.text : null
   // A base entry with no readable text (symlink, binary, oversized) shows its reason in place
-  // of content, read-only; a readable file beyond the change size cap is viewable but not
-  // editable, since no change could carry its new text.
+  // of content, read-only.
   const activeFileUnreadable = activeResolved?.kind === 'unreadable'
     ? activeResolved.message : null
-  const activeFileOversized = activeFileText !== null && activeFileText.length > MAX_FILE_TEXT_LENGTH
   // The diff's original side: the review base's text (null = absent there: an added file). The
   // diff waits for that read too, so a file never opens as "added" for the round trip before
   // its original arrives. An original with no readable text (a binary the chat replaced or
@@ -1583,7 +1586,7 @@ export default function WorkpieceCodeInterface({
                 original={activeFileOriginal}
                 text={activeFileText}
                 session={activeSession}
-                readOnly={isEditingLocked || activeFileOversized}
+                readOnly={isEditingLocked}
                 height="100%"
               />
             ) : (

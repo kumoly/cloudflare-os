@@ -108,6 +108,25 @@ export type EmailContent = {
   html?: string;
 }
 
+/**
+ * A regular file attachment to upload. Inline parts and Content-IDs are not supported.
+ * Each file may contain at most 10 MiB (10,485,760 bytes).
+ */
+export type GmailAttachmentInput = {
+  /**
+   * Nonempty filename without path separators, control characters, `.` / `..`, or an RFC 2047
+   * encoded word such as `=?UTF-8?B?...?=`.
+   */
+  filename: string;
+  /**
+   * Valid MIME media type, such as `application/pdf`; multipart containers are not supported.
+   * Filename parameters (`name` / `name*`) are ignored in favor of `filename`.
+   */
+  mimeType: string;
+  /** Exact file bytes, not text or base64. Empty files are supported. */
+  content: ArrayBuffer;
+}
+
 /** Optional fields for a new message or forward. */
 export type GmailComposeOptions = {
   /** Carbon-copy recipients. */
@@ -116,6 +135,8 @@ export type GmailComposeOptions = {
   bcc?: EmailRecipient[];
   /** HTML alternative for the plain-text body, which may be empty. */
   html?: string;
+  /** Regular files to include; forwards append these after all preserved source attachments. */
+  attachments?: GmailAttachmentInput[];
 }
 
 /**
@@ -133,6 +154,8 @@ export type GmailReplyOptions = {
   cc?: EmailRecipient[];
   /** Replacement blind-carbon-copy recipients. */
   bcc?: EmailRecipient[];
+  /** Regular files to include in the reply; source message attachments are not copied. */
+  attachments?: GmailAttachmentInput[];
 }
 
 /** Initial content for a Gmail draft. Every field may be filled in later. */
@@ -149,6 +172,8 @@ export type GmailDraftInput = {
   text?: string;
   /** HTML alternative to the plain-text body. */
   html?: string;
+  /** Initial regular file attachments. Files can also be added later with `addAttachment()`. */
+  attachments?: GmailAttachmentInput[];
 }
 
 /** Fields to replace on an existing Gmail draft. Omitted fields remain unchanged. */
@@ -235,9 +260,9 @@ export interface GmailMessageHook {
   /**
    * Called with each new message. `entry.message` can read it in full, reply and change it;
    * writes are queued for approval, and it is released when this call returns (call
-   * `entry.message.thread()` for the rest of the thread). Delivery is at least once and
-   * unordered, and a message this throws for is retried with backoff, eight attempts in all, so
-   * key any work on `entry.info.id` to keep it idempotent. Disabling the hook ends its retries.
+   * `entry.message.thread()` for the rest of the thread). A message may arrive more than once or
+   * out of order, so key any work on `entry.info.id` to keep it idempotent; one this throws for
+   * is retried with backoff, eight attempts in all. Disabling the hook ends its retries.
    */
   receiveMessage(entry: GmailMessageEntry): Promise<void>;
 }
@@ -256,6 +281,14 @@ export type GmailAttachmentEntry = {
   info: GmailAttachmentInfo;
   /** Capability for reading this MIME part's content. */
   attachment: GmailAttachment;
+}
+
+/** A draft attachment entry containing metadata and a draft attachment capability. */
+export type GmailDraftAttachmentEntry = {
+  /** Metadata for this MIME part. */
+  info: GmailAttachmentInfo;
+  /** Capability for reading this part and removing it when mutable. */
+  attachment: GmailDraftAttachment;
 }
 
 /** Access to the messages and drafts admitted by any Gmail binding. */
@@ -338,11 +371,12 @@ export interface GmailScopedSession {
    * delivered. The hook starts disabled, and nothing is delivered until the user enables it.
    * Every call creates a distinct hook, so subscribe once per mailbox or thread to watch.
    *
-   * `hook` must be a persistent stub: from `executeCode`, create it with
-   * `env.MY_GADGET[restore](params)` on the Gadget's binding; inside the Gadget, with
-   * `this.ctx.restore(params)`. The Gadget's `[restore]()` receives those `params` for every
-   * delivery, so they can tell its subscriptions apart. The restored target is a separate
-   * object; pass it what it needs from `[restore]()`, such as `this`, the Gadget.
+   * `hook` must be a persistent stub that restores through a Gadget's `[restore]()` method: inside
+   * the Gadget, create it with `this.ctx.restore(params)`; from `executeCode`, through the Gadget's
+   * binding, as "Persistent Stubs and `ctx.restore()`" in your instructions describes. The
+   * Gadget's `[restore]()` receives those `params` for every delivery, so they can tell its
+   * subscriptions apart. The restored target is a separate object; pass it what it needs from
+   * `[restore]()`, such as `this`, the Gadget.
    *
    * Throws for a search binding, and if this deployment has not configured Gmail hooks.
    *
@@ -361,11 +395,8 @@ export interface GmailScopedSession {
    *   }
    * }
    *
-   * // executeCode
-   * import { restore } from "cloudflare:workers";
-   * export default async function(self, env) {
-   *   await env.GMAIL_INBOX.subscribeNewMessages(await env.MY_GADGET[restore]({ type: "gmail" }));
-   * }
+   * // executeCode, where `hook` is a persistent stub for the params `{ type: "gmail" }`
+   * await env.GMAIL_INBOX.subscribeNewMessages(hook);
    */
   subscribeNewMessages(hook: RpcStub<GmailMessageHook>): Promise<void>;
 }
@@ -528,8 +559,8 @@ export interface GmailMessage {
    * Forward this message inline using Gmail's standard forwarded-message
    * header block and quoted source content. `body` is an optional plain-text
    * preface and `options.html`, when provided, is its HTML alternative. The
-   * original attachments are included as regular attachments. At least one
-   * To, CC, or BCC recipient is required. Returns an identifier that can be
+   * original attachments and inline parts are preserved; supplied files are appended.
+   * At least one To, CC, or BCC recipient is required. Returns an identifier that can be
    * passed to {@link GmailScopedSession.getMessage}.
    */
   forward(
@@ -547,7 +578,8 @@ export interface GmailMessage {
   /**
    * Create an inline draft forward using Gmail's standard forwarded-message
    * header block and quoted source content. `body` is an optional plain-text
-   * preface and the original attachments are included as regular attachments.
+   * preface. Original attachments and inline parts are preserved and cannot be
+   * removed from the draft; supplied files are appended and can be removed.
    */
   createForwardDraft(
     to: EmailRecipient[],
@@ -596,8 +628,11 @@ export interface GmailDraft {
   /** Get the draft's plain-text and HTML body representations. */
   getContent(): Promise<EmailContent>;
 
-  /** List regular attachments and inline MIME parts currently stored in the draft. */
-  attachments(): Promise<GmailAttachmentEntry[]>;
+  /** List attachments and inline MIME parts, including preserved immutable forward source parts. */
+  attachments(): Promise<GmailDraftAttachmentEntry[]>;
+
+  /** Add a regular file of at most 10 MiB and return its readable, removable capability. */
+  addAttachment(input: GmailAttachmentInput): Promise<GmailDraftAttachment>;
 
   /**
    * Replace selected fields while preserving omitted fields. A reply draft's
@@ -617,6 +652,15 @@ export interface GmailDraft {
    * to {@link GmailScopedSession.getMessage}.
    */
   send(): Promise<GmailMessageId>;
+}
+
+/** Read access and removal authority for one attachment in a draft. */
+export interface GmailDraftAttachment extends GmailAttachment {
+  /**
+   * Remove this part from the draft. Throws for immutable source attachments in
+   * a forward draft, or when the draft or attachment no longer exists.
+   */
+  remove(): Promise<void>;
 }
 
 /** Read access to one regular attachment or inline MIME part. */

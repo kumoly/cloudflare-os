@@ -1,3 +1,4 @@
+import { env } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
   ActionDescription, ApprovalQueue, GitCache, HookController, HookDescription,
@@ -5,6 +6,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { unguardedNativeRead, type NativeRead } from "../../src/drive-session";
+import { officeFileError } from "../../src/office-conversion";
 import { GoogleSlidesApi } from "../../src/slides-api";
 import { GooglePresentationSessionImpl } from "../../src/slides";
 import type { QueuedChange } from "../../src/slides-simulation";
@@ -82,7 +84,10 @@ beforeEach(() => {
     return page ? Response.json(page) : new Response(null, { status: 404 });
   }));
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 /**
  * `wrap` stands in for a scope-checking read, such as a Drive folder binding's, around the base;
@@ -174,6 +179,36 @@ describe("Google Slides presentation session", () => {
       .rejects.toThrow('Slide "new" is a new slide awaiting approval');
   });
 
+  // A picture's `contentUrl` acts as the account that read it for 30 minutes, so no read asks
+  // for it, and one Google sent anyway would not be returned.
+  it("reads a picture background by its size alone, never asking for its URL", async () => {
+    let picture = { stretchedPictureFill: { contentUrl: IMAGE_URL, size: {} } };
+    deck = presentation([
+      slide("s1", [shape("t1", text(["Intro"]), { placeholder: "TITLE" })], { background: picture }),
+      slide("s2", []),
+    ]);
+    deck.masters![0].pageProperties!.pageBackgroundFill = picture;
+    let { session } = newSession();
+    using _session = session;
+
+    let info = await session.getPresentation();
+    let [read] = await session.getSlides(["s1"]);
+
+    let masks = providerFetches.map(url => url.searchParams.get("fields") ?? "");
+    expect(masks).toHaveLength(3);
+    for (let mask of masks) {
+      expect(mask).toContain("stretchedPictureFill(size)");
+      expect(mask).not.toContain("contentUrl");
+      // A parent field with no sub-mask returns everything under it, the picture's URL included.
+      expect(mask).not.toMatch(/(pageProperties|pageBackgroundFill|stretchedPictureFill)(?!\()/);
+      expect(mask.replaceAll("stretchedPictureFill(size)", "")).not.toContain("stretchedPictureFill");
+    }
+    expect(info.masters.map(m => m.background)).toEqual(["picture"]);
+    expect(info.slides.map(s => s.background)).toEqual(["picture", undefined]);
+    expect(read.background).toBe("picture");
+    expect(JSON.stringify([info, read])).not.toContain("googleusercontent");
+  });
+
   describe("getSlideThumbnail", () => {
     it("returns the rendered PNG, sized by its own header, without sending the token", async () => {
       let { queue, session } = newSession();
@@ -229,5 +264,82 @@ describe("Google Slides presentation session", () => {
         .rejects.toThrow("unexpected thumbnail location");
       expect(providerFetches.map(url => url.hostname)).not.toContain(new URL(location).hostname);
     });
+  });
+});
+
+const SLIDES_PATTERN = "https://docs.google.com/presentation/d/:presentationId/*";
+/** Google's own words for refusing an Office file, which nothing of ours may repeat. */
+const OFFICE_REFUSAL =
+  "This operation is not supported for this document. The document must not be an Office file.";
+
+/**
+ * Stands in for Google while a presentation is created and then described: Slides opens it or
+ * refuses it as it refuses an Office file, and Drive reports `drive`'s type or fails.
+ */
+function officeProvider(slides: "opens" | "refuses", drive: { mimeType: string } | "fails") {
+  let driveRequests: URL[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    let request = new Request(input, init);
+    let url = new URL(request.url);
+    if (url.hostname === "slides.googleapis.com" && request.method === "POST") {
+      return Response.json({ presentationId: "office-deck" });
+    }
+    if (url.hostname === "slides.googleapis.com") {
+      if (slides === "opens") return Response.json({ presentationId: "office-deck", title: "Pitch" });
+      return Response.json(
+        { error: { code: 400, status: "FAILED_PRECONDITION", message: OFFICE_REFUSAL } }, { status: 400 });
+    }
+    if (url.hostname === "www.googleapis.com") {
+      driveRequests.push(url);
+      if (drive === "fails") return Response.json({ error: { code: 500 } }, { status: 500 });
+      return Response.json({ id: "office-deck", name: "Pitch.pptx", mimeType: drive.mimeType });
+    }
+    throw new Error(`Unexpected provider request: ${url.origin}${url.pathname}`);
+  }));
+  return driveRequests;
+}
+
+/** A presentation binding on the real Slides gatekeeper, reached as the overseer reaches it. */
+async function boundPresentation(facet: string) {
+  let hooks = env.TEST_HOOKS.getByName("hooks");
+  await hooks.createResource(facet, SLIDES_PATTERN, "Pitch");
+  await hooks.applyCreation(facet);
+  await hooks.adoptCreated(facet);
+  return hooks;
+}
+
+describe("Google Slides describe() of an Office file", () => {
+  it("explains a refusal of a file Drive reports as an Office presentation", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let driveRequests = officeProvider("refuses", {
+      mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    });
+    let hooks = await boundPresentation("slides-office");
+
+    let error = await Promise.resolve(hooks.describe("slides-office")).catch((value: Error) => value);
+
+    expect((error as Error).message).toBe(officeFileError("slides").message);
+    expect((error as Error).message).not.toContain(OFFICE_REFUSAL);
+    expect(driveRequests.map(url => url.pathname)).toEqual(["/drive/v3/files/office-deck"]);
+  });
+
+  it("keeps Google's status for a native presentation, or when Drive cannot say", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    officeProvider("refuses", { mimeType: "application/vnd.google-apps.presentation" });
+    let hooks = await boundPresentation("slides-office-native");
+    await expect(Promise.resolve(hooks.describe("slides-office-native")))
+      .rejects.toThrow("Google Slides get title failed [http=400]");
+
+    officeProvider("refuses", "fails");
+    await expect(Promise.resolve(hooks.describe("slides-office-native")))
+      .rejects.toThrow("Google Slides get title failed [http=400]");
+  });
+
+  it("describes a native presentation without asking Drive", async () => {
+    let driveRequests = officeProvider("opens", { mimeType: "application/vnd.google-apps.presentation" });
+    let hooks = await boundPresentation("slides-native");
+
+    expect(await hooks.describe("slides-native")).toMatchObject({ title: "Pitch" });
+    expect(driveRequests).toEqual([]);
   });
 });

@@ -24,8 +24,9 @@
 // Gadget a stub pointing to the Gadget's server-side Durable Object interface.
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
+import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
+import type { GitOid } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
 export const SERVICE_SALT = new Uint8Array([
@@ -195,6 +196,9 @@ export type UserNotification = {
   /** Current human-readable chat title. */
   chatTitle: string;
 };
+
+/** How long a workspace's notifications stay muted: until a time, or until the user unmutes it. */
+export type NotificationMute = { until: Date, indefinite?: never } | { indefinite: true, until?: never };
 
 /** Callback used by `AuthenticatedApi.subscribeToNotifications()`. */
 export interface NotificationSubscriber extends RpcTarget {
@@ -446,10 +450,28 @@ export type UserDirectoryRecord = {
   name: string;
 };
 
+/** Routing identity and one-use proof posted by the authenticated browser to redeem a transfer. */
+export type DeviceSessionHandoffStart = {
+  /** Durable Object identifier for the staging user; this value is not secret. */
+  userDoId: string;
+  /** Single-use 256-bit secret in lowercase hex; only its hash is stored server-side. */
+  ticket: string;
+};
+
 /** Top-level API exposed to the user after they have authenticated. */
 export interface AuthenticatedApi extends RpcTarget {
   /** Get profile info for the user who is logged in. */
   whoami(): Promise<AiChatAuthorInfo>;
+
+  /**
+   * Stage a two-minute, single-use device-session transfer for a native app. The state is an
+   * opaque 16–512 character URL-safe value and the key is an uncompressed P-256 public key encoded
+   * as unpadded base64url. The encrypted credential remains server-side until the browser POSTs
+   * the returned ticket to `/api/device-session/callback`, which redirects to the fixed, claimed
+   * HTTPS app link. Repeating a live state reissues its ticket and invalidates the previous one.
+   */
+  beginDeviceSessionHandoff(publicKey: string, state: string)
+    : Promise<DeviceSessionHandoffStart>;
 
   /** Set the user's own display name, seen in chats, etc. */
   setOwnDisplayName(name: string): Promise<void>;
@@ -503,12 +525,19 @@ export interface AuthenticatedApi extends RpcTarget {
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
 
   /**
-   * List the user's configured AI models.
+   * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute
+   * it with null. Permission requests still come through.
+   */
+  setWorkspaceNotificationMute(workspaceId: string, mute: NotificationMute | null): Promise<void>;
+
+  /**
+   * List the user's configured AI models of one kind, by default the language models, which can
+   * chat.
    *
    * Note that the list returned here could be different from a particular gadget's Overseer,
    * especially if the gadget is owned by someone else.
    */
-  listModels(): Promise<AiChatAuthorInfo[]>;
+  listModels(kind?: ModelKind): Promise<AiChatAuthorInfo[]>;
 
   /**
    * Adds a new model to the user's configured set. The ID must not name a model the user already
@@ -660,6 +689,9 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   listGadgets(): Promise<GadgetMetadataWithTimestamps[]>;
 
+  /** Pin or unpin this workspace in the user's list. */
+  setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
+
   /**
    * List the outputs of all the user's workspaces. Used to display the Outputs page, which lets
    * the user find things they made without remembering which workspace they made them in.
@@ -720,6 +752,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * on a connected account, expanding if needed. Returns a flow to open as a disowned popup (as for
    * connectAccount()) to authorize them, or null if nothing was needed. Completion is redeemed via
    * completeConnectHandoff(); the updated grant is then observable via subscribeConnectedAccounts().
+   * Returning null also re-reads the account's description, so a list of granted resource types
+   * that was out of date is corrected and observable the same way.
    */
   ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<ConnectFlowStart | null>;
 
@@ -765,6 +799,14 @@ export interface AuthenticatedApi extends RpcTarget {
     accountId: number,
     resourceUrlPattern: string,
   ): Promise<ResourceConfiguratorFrame>;
+
+  /**
+   * Get the UI in which the approver of a creation of the type `resourceUrlPattern` configures it
+   * in their connected account `accountId` (see SupportedResource.creationConfigurator). The
+   * frame's collectResourceUrl() gives CreationApproval.configuration.
+   */
+  startCreationConfigurator(accountId: number, resourceUrlPattern: string)
+      : Promise<GatekeeperUiFrame>;
 
   /**
    * Remove a shared gadget from the user's home page listing. Does NOT revoke the user's
@@ -871,6 +913,16 @@ export interface AuthenticatedApi extends RpcTarget {
    * in a sandboxed iframe and exposes `ui` to it over a MessagePort RPC session.
    */
   getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null>;
+
+  /**
+   * Mint a single-use ticket for a user selected on behalf of a gatekeeper app,
+   * redeemable through that gatekeeper app's exchange capability (see
+   * GatekeeperUserSelectionExchangeImpl). Returns null if the selected user is
+   * this user or does not exist.
+   */
+  createGatekeeperUserSelection(
+      vendorId: string, selectedUserId: string,
+  ): Promise<GatekeeperUserSelection | null>;
 
   // --- Deployment admin ---
 
@@ -1825,6 +1877,13 @@ export type RedactedAiModelConfig = Omit<AiModelConfig,
  */
 export const WORKERS_AI_OUTPUT_LIMIT = 32768;
 
+/**
+ * What a model does, which decides where it can be used. A `"language"` model writes text: it can
+ * chat and back a `LanguageModelBinding`. A `"decision"` model answers typed questions with
+ * probabilities: gadgets can bind it as a `DecisionModelBinding`, but it can't chat.
+ */
+export type ModelKind = "language" | "decision";
+
 /** One entry of SUGGESTED_MODELS. */
 type SuggestedModel = {
   name: string;
@@ -1849,6 +1908,9 @@ type SuggestedModel = {
    * admin can override the default for its AI Gateway.
    */
   hidden?: true;
+
+  /** The model's kind; absent means `"language"`. */
+  kind?: ModelKind;
 };
 
 // The literal is kept apart from the export so SuggestedModelId can derive the model ids from it.
@@ -1868,6 +1930,10 @@ const SUGGESTED_MODEL_CATALOG = {
     "@cf/deepseek-ai/deepseek-v4-pro-0813": {
       name: "DeepSeek V4 Pro 0813 (Workers AI)", contextWindow: 1048576,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/cloudflare/clef": {name: "Clef (Workers AI)", contextWindow: 65536, kind: "decision"},
+    "@cf/cloudflare/clef-flash": {
+      name: "Clef Flash (Workers AI)", contextWindow: 65536, kind: "decision",
     },
   },
   "anthropic": {
@@ -1932,6 +1998,11 @@ export const SUGGESTED_MODELS: Record<AiModelProvider, Record<string, SuggestedM
 export type SuggestedModelId<P extends AiModelProvider = AiModelProvider> =
   { [K in P]: keyof (typeof SUGGESTED_MODEL_CATALOG)[K] & string }[P];
 
+/** The kind of a model, named by its provider and its ID on the provider's API. */
+export function modelKind(provider: string, model: string): ModelKind {
+  return SUGGESTED_MODELS[provider as AiModelProvider]?.[model]?.kind ?? "language";
+}
+
 /**
  * Providers whose pi API adapter refuses a custom fetch, so their inference cannot ride the
  * Workers AI binding and needs CF_AI_GATEWAY_API_TOKEN over HTTPS. pi's Google adapter throws
@@ -1971,6 +2042,9 @@ export type GadgetMetadata = {
 
   /** Whether the user has pinned this gadget to the top of their list. */
   pinned?: boolean;
+
+  /** Set while the user has muted this workspace's notifications. */
+  notificationMute?: NotificationMute;
 
   /**
    * Set when the gadget is not owned by the current user. Presence of this field indicates the
@@ -2241,8 +2315,9 @@ export const MAX_READ_FILES_PER_CALL = 64;
 /**
  * Text bytes after which Overseer.readFilesAtCommit() stops decoding and omits the remaining
  * requested paths from its response (the client re-requests them). Keeps one response well
- * under the RPC message ceiling even with the UTF-16 inflation of serialized text; a single
- * file, being at most the git store's per-object cap, is always returned whole.
+ * under the RPC message ceiling even with the UTF-16 inflation of serialized text. The first
+ * file is always returned whole, however large, so every call makes progress; its size is
+ * bounded only by what the git store could hold.
  */
 export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
 
@@ -2311,6 +2386,19 @@ export type ActionLogEntry = {
   // Note that `state` is not meaningful for hooks. Instead of being "approved" or "rejected", they
   // are enabled/disabled, which the user can freely toggle as often as they want.
 });
+
+/** How the approver of a creation (see ActionLogEntry.creation) chose to make it. */
+export type CreationApproval = {
+  /** The approver's connected account, for the gatekeeper's vendor, to create the resource in. */
+  accountId: number;
+
+  /**
+   * What the approver chose in that account's creation configurator (see
+   * AuthenticatedApi.startCreationConfigurator()): a vendor-defined URL only the gatekeeper reads.
+   * Omitted when they made no choice, as for a type without one.
+   */
+  configuration?: string;
+};
 
 export type BoundHookInfo = {
   id: number;
@@ -2402,9 +2490,6 @@ export interface Overseer extends RpcTarget {
 
   /** Change the workspace title. */
   setTitle(title: string): Promise<void>;
-
-  /** Pin or unpin this workspace in the user's list. */
-  setPinned(pinned: boolean): Promise<void>;
 
   /**
    * Instruct the workspace to delete itself, removing it from the User's workspace list and
@@ -2585,7 +2670,8 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Create a new gatekeeper for an AI model binding. The model can be any returned by
-   * listModels().
+   * `AuthenticatedApi.listModels()`. A language model's gatekeeper provides a
+   * `LanguageModelBinding`, a decision model's a `DecisionModelBinding`.
    */
   newAiModelGatekeeper(modelId: string): Promise<GatekeeperClient<any>>;
 
@@ -2610,10 +2696,10 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Approve an action that is currently in the "pending" state. The action will be performed on
-   * approval. Approving a creation (see ActionLogEntry.creation) requires `accountId`: the
-   * approver's connected account, for the gatekeeper's vendor, in which the resource is created.
+   * approval. Approving a creation (see ActionLogEntry.creation) requires `creation`: how the
+   * approver chose to make it.
    */
-  approveAction(id: number, accountId?: number): Promise<void>;
+  approveAction(id: number, creation?: CreationApproval): Promise<void>;
 
   /**
    * Reject an action that is in the "pending" state. This notifies the gatekeeper that it will not
@@ -2709,8 +2795,8 @@ export interface Overseer extends RpcTarget {
   listChats(): Promise<AiChatMetadata[]>;
 
   /**
-   * List available models. The first listed model should be the default, unless the user has
-   * chosen something else.
+   * List available language models; decision models are left out. The first listed model should
+   * be the default, unless the user has chosen something else.
    */
   listModels(): Promise<AiChatAuthorInfo[]>;
 
@@ -2783,13 +2869,13 @@ export interface Overseer extends RpcTarget {
                   formats?: MessageFormatRef[]): Promise<void>;
 
   /**
-   * Upload an attachment for use in a future chat message. This way by the time the user wants to
-   * send the message, likely uploading is complete. `modelId` determines whether the
-   * selected provider can receive a raw file attachment.
-   *
-   * Pass the returned handle to newChat() or sendChatMessage() to commit the attachment into chat history.
+   * Store raw bytes as an immutable Git blob and return its OID after durable storage.
+   * Retrying identical bytes returns the same OID. This does not change any worktree or message.
+   * Use the OID in a chat attachment, or in a worktree's whole-file `setBytes` change together
+   * with the payload's byte length. The blob must be present in this workspace's Git store.
+   * Limited to 8,000,000 bytes; larger-file support is deferred.
    */
-  uploadChatAttachment(attachment: ChatAttachmentUpload, modelId: string | null): Promise<ChatAttachmentHandle>;
+  uploadBlob(content: Uint8Array): Promise<GitOid>;
 
   /**
    * Fetch the bytes of a committed chat attachment over RPC. The canonical metadata is already
@@ -2797,9 +2883,6 @@ export interface Overseer extends RpcTarget {
    * only to download non-image attachments on demand.
    */
   getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array>;
-
-  /** Delete an uploaded attachment that the user explicitly removed before sending the message. */
-  deleteChatAttachment(id: string): Promise<void>;
 
   /**
    * Update the title of a chat. Usually not needed as a title is generated automatically from
@@ -3751,6 +3834,18 @@ export type AiChatMessageBody = {
   type: "useGadget";
 } | {
   /**
+   * The always-available resources changed after the agent's system prompt listed them: a
+   * catalog changed, e.g. a skill was added to the Context Library, or the chat gained a resource,
+   * e.g. the owner turned on Web Search. The agent writes this before the model request that first
+   * sees the change, and tells the model what changed, so the system prompt can stay the same for
+   * the whole chat. Clients show nothing for it.
+   */
+  type: "catalogChange";
+
+  /** Each changed or new resource, as it is now. */
+  resources: AlwaysAvailableResource[];
+} | {
+  /**
    * Indicates that the agent run ended with an error (e.g. LLM API failure, abort, server
    * restart). This is displayed to the user with a "retry" button, but is NOT included in the
    * chat log sent to the LLM so the agent does not react to it.
@@ -3784,9 +3879,10 @@ export type AiChatMessageBody = {
   bindingName?: string;
 } | {
   /**
-   * **Obsolete.** A system-generated nudge message that was sent to the agent when it tried to
-   * end its turn while agent callbacks were still unresolved. No longer emitted since callable
-   * agents stopped returning values; retained so older chat logs remain readable.
+   * A model-visible control note for an approved-decision handoff, explicit Retry, or Stop.
+   * It also ends the preceding decision segment for recovery. Not rendered in the chat UI:
+   * the decision cards and turn controls already show these transitions to the user.
+   * Older logs used this variant to nudge an agent whose callbacks were still unresolved.
    */
   type: "agentNudge";
   text: string;
@@ -3857,37 +3953,58 @@ export type AiChatMessageBody = {
 };
 
 /**
- * Bytes to upload as a chat attachment.
- *
- * The server stores the bytes and returns the handle to pass when sending the message.
+ * A resource the agent can always use without requesting it (e.g. the Context Library's read
+ * session), as its system prompt lists it.
  */
-export type ChatAttachmentUpload = {
-  mimeType: string;
-  content: Uint8Array;
-  name?: string;
+export type AlwaysAvailableResource = {
+  /** The resource's binding name in the agent's `env`. */
+  name: string;
+
+  /** The resource's title. */
+  title: string;
+
+  /** The resource's discovery catalog, or null if it has none or it failed to load. */
+  catalog: AgentCatalog | null;
 };
 
 /**
- * Handle for an attachment that has been uploaded but not yet sent as part of a message.
- *
- * Pass this back unchanged when sending the chat message.
+ * A previously uploaded blob to attach to a chat message, with display/model-input metadata.
+ * The blob must be present in this workspace's Git store. Attachment limits and MIME signatures
+ * are checked when sending. The ID-only variant accepts legacy staged uploads.
  */
 export type ChatAttachmentHandle = {
-  /** Clients must not infer storage paths from this ID or construct handles by hand. */
+  /** Immutable Git blob returned by `uploadBlob()`. */
+  oid: GitOid;
+  /** MIME type of this use of the blob; it does not change the stored bytes. */
+  mimeType: string;
+  /** Original display filename, sanitized when sending. */
+  name?: string;
+} | {
+  /** Legacy staged-upload ID; new clients use a blob OID instead. */
   id: string;
 };
 
 /**
  * Attachment metadata returned to clients.
  *
- * For image attachments, `content` carries the full image bytes inline so the client can render
- * them in the chat without an extra round trip. For other attachments, fetch the bytes on demand
- * via `Overseer.getChatAttachmentContent()`.
+ * For supported inline image formats, `content` carries the image bytes so the client can render
+ * them without an extra round trip. For other attachments, fetch the bytes on demand via
+ * `Overseer.getChatAttachmentContent()`.
  */
-export type ChatAttachmentRef = ChatAttachmentHandle & {
+export type ChatAttachmentRef = {
+  /** Chat-owned attachment identity used for downloads and message rendering. */
+  id: string;
+  /** Original immutable upload blob. Absent on legacy attachments. */
+  oid?: GitOid;
   mimeType: string;
   name?: string;
   size: number;
+
+  /**
+   * Path in the chat's scratch worktree, preserving uploaded bytes for every file format.
+   * Absent only on legacy attachments committed before workspace ingress was introduced.
+   */
+  workspacePath?: string;
 
   /** Inlined bytes for small image attachments. Present only for images. */
   content?: Uint8Array;
@@ -5005,6 +5122,9 @@ export type BlueprintBinding = {
    * it up to the recipient.
    */
   suggestedModel?: {provider: string, modelName: string};
+
+  /** The source binding's model kind, so installers pick one of that kind; absent: `"language"`. */
+  modelKind?: ModelKind;
 } | {
   /** An agent spawner binding. */
   type: "agentSpawner";

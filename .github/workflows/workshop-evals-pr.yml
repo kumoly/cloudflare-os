@@ -211,7 +211,7 @@ jobs:
 
       - name: Upload ${{ matrix.revision }} results
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-run-${{ matrix.revision }}
           path: ${{ runner.temp }}/run
@@ -234,7 +234,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.store) }}
     steps:
       - name: Download ${{ matrix.revision }} results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-run-${{ matrix.revision }}
           path: run
@@ -258,7 +258,7 @@ jobs:
 
       - name: Store ${{ matrix.task }}
         if: steps.clean.outputs.clean == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-${{ matrix.name }}
           path: run/${{ matrix.revision }}/${{ matrix.task }}.json
@@ -299,7 +299,7 @@ jobs:
       # Each leg's files sit under its revision, so merging gives one layout for one leg or two.
       - name: Download this run's results
         if: needs.plan.outputs.legs != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: workshop-evals-run-*
           path: runs
@@ -315,7 +315,7 @@ jobs:
         run: node scripts/evals/workflow.ts join runs artifacts
 
       - name: Upload baseline trajectories
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-baseline
           path: artifacts/baseline/results.json
@@ -324,7 +324,7 @@ jobs:
           retention-days: 30
 
       - name: Upload candidate trajectories
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-candidate
           path: artifacts/candidate/results.json
@@ -348,7 +348,7 @@ jobs:
           cat artifacts/comparison/comparison.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload comparison
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-comparison
           path: artifacts/comparison
@@ -397,19 +397,19 @@ jobs:
         run: echo /artifacts/ >> .git/info/exclude
 
       - name: Download baseline trajectories
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-baseline
           path: artifacts/baseline
 
       - name: Download candidate trajectories
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-candidate
           path: artifacts/candidate
 
       - name: Download deterministic comparison
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-comparison
           path: artifacts/comparison
@@ -443,15 +443,22 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
-          # BONK_MODEL is a repository variable, shared by every Bonk workflow.
-          OPENCODE_CONFIG_CONTENT: '{"provider":{"cloudflare-ai-gateway":{"models":{"${{ vars.BONK_MODEL }}":{}}}},"permission":{"*":"deny","read":"allow","grep":"allow","glob":"allow","list":"allow"}}'
+          # BONK_MODEL is a repository variable, shared by every Bonk workflow. opencode gives a
+          # model its bundled catalog does not list no variants, then silently ignores `variant`,
+          # so the entry declares the model a reasoning one, with a date late enough for opencode
+          # to offer `xhigh`. That applies to whatever BONK_MODEL names, so the variable must
+          # name a reasoning model that supports `xhigh`.
+          OPENCODE_CONFIG_CONTENT: '{"provider":{"cloudflare-ai-gateway":{"models":{"${{ vars.BONK_MODEL }}":{"reasoning":true,"release_date":"2026-09-29"}}}},"permission":{"*":"deny","read":"allow","grep":"allow","glob":"allow","list":"allow"}}'
         with:
           oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
           model: "cloudflare-ai-gateway/${{ vars.BONK_MODEL }}"
-          variant: "high"
+          variant: "xhigh"
           forks: "false"
           permissions: any
           token_permissions: NO_PUSH
+          # The model declaration in OPENCODE_CONFIG_CONTENT is needed only while this version's
+          # catalog lacks BONK_MODEL under the gateway. Re-check it when bumping: delete it if
+          # `opencode models cloudflare-ai-gateway --verbose` shows the model's variants without it.
           opencode_version: 1.18.24
           prompt: |
             This is an advisory review of the eval runs, not a code review. Read
