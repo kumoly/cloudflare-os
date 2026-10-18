@@ -4,11 +4,12 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdtemp, writeFile, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MineruWorker, MineruError } from "./mineru-worker.mjs";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 const SCOPE = /^[a-f0-9]{64}$/;
 const ID = /^[a-f0-9-]{36}$/;
-const OPERATIONS = new Set(["inspect", "extract", "render", "ocr"]);
+const OPERATIONS = new Set(["inspect", "extract", "render", "ocr", "parse"]);
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const DEFAULT_LIMITS = {
   inputBytes: 16 * 1024 * 1024,
@@ -67,6 +68,10 @@ function requestInput(value, limits) {
   if (value.pages !== undefined && (!Array.isArray(value.pages) || !value.pages.length
       || value.pages.length > limits.pages || value.pages.some((p) => !Number.isSafeInteger(p) || p < 1)
       || new Set(value.pages).size !== value.pages.length)) throw new RunnerError("INVALID_PAGES");
+  if (value.operation === "parse" && (value.dpi !== undefined || value.language !== undefined)) {
+    throw new RunnerError("INVALID_PARSE_OPTIONS");
+  }
+  if (value.operation === "parse" && value.pages?.length > 20) throw new RunnerError("PAGE_LIMIT");
   const dpi = value.dpi ?? 110;
   if (!Number.isSafeInteger(dpi) || dpi < 72 || dpi > 144) throw new RunnerError("INVALID_DPI");
   const language = value.language ?? "eng";
@@ -145,11 +150,13 @@ async function imagePage(tools, file, page, dpi, execution, limits) {
 }
 
 /** Create an authenticated, loopback-only PDF job server. All document bytes remain ephemeral. */
-export function createDocumentRunner({ token, tools = {}, limits: overrides = {} }) {
+export function createDocumentRunner({ token, tools = {}, limits: overrides = {}, mineru = {}, tempRoot = tmpdir() }) {
   if (typeof token !== "string" || token.length < 32 || token.length > 256 || !/^[A-Za-z0-9_-]+$/.test(token)) {
     throw new RunnerError("INVALID_SERVER_TOKEN");
   }
   const limits = { ...DEFAULT_LIMITS, ...overrides };
+  const parser = new MineruWorker({ ...mineru, maxBytes: limits.outputBytes, jobsRoot: tempRoot });
+  parser.warm();
   const binaries = { pdfinfo: "pdfinfo", pdftotext: "pdftotext", pdftoppm: "pdftoppm", tesseract: "tesseract", ...tools };
   const expected = Buffer.from(`Bearer ${token}`);
   const jobs = new Map();
@@ -208,16 +215,19 @@ export function createDocumentRunner({ token, tools = {}, limits: overrides = {}
       job.controller.abort();
     }, limits.timeoutMs);
     try {
-      dir = await mkdtemp(join(tmpdir(), "cfos-pdf-"));
+      dir = await mkdtemp(join(tempRoot, "cfos-pdf-"));
       const file = join(dir, "input.pdf");
       await writeFile(file, job.input, { mode: 0o600 });
       const execution = { signal: job.controller.signal, cwd: dir };
       const metadata = await inspect(binaries, file, execution, limits);
       const pages = job.pages ?? Array.from({ length: metadata.pageCount }, (_, i) => i + 1);
       if (pages.some((p) => p > metadata.pageCount)) throw new RunnerError("INVALID_PAGES");
-      if (["render", "ocr"].includes(job.operation) && pages.length > limits.imagePages) throw new RunnerError("PAGE_LIMIT");
-      const result = { ...metadata };
-      if (job.operation !== "inspect") {
+      if (["render", "ocr", "parse"].includes(job.operation) && pages.length > limits.imagePages) throw new RunnerError("PAGE_LIMIT");
+      let result = { ...metadata };
+      if (job.operation === "parse") {
+        const parsed = await parser.parse(dir, pages, job.controller.signal);
+        result = { ...metadata, parser: parsed.parser, pages: parsed.pages };
+      } else if (job.operation !== "inspect") {
         result.pages = [];
         let bytes = 0;
         for (const page of pages) {
@@ -257,7 +267,7 @@ export function createDocumentRunner({ token, tools = {}, limits: overrides = {}
     } catch (error) {
       job.artifacts.clear();
       job.status = job.cancelRequested ? "cancelled" : "failed";
-      if (job.status === "failed") job.errorCode = job.timedOut ? "TIMEOUT" : error instanceof RunnerError ? error.code : "PROCESSING_FAILED";
+      if (job.status === "failed") job.errorCode = job.timedOut ? "TIMEOUT" : (error instanceof RunnerError || error instanceof MineruError) ? error.code : "PROCESSING_FAILED";
     } finally {
       clearTimeout(timer);
       try {
@@ -307,7 +317,9 @@ export function createDocumentRunner({ token, tools = {}, limits: overrides = {}
       const url = new URL(req.url, "http://localhost");
       const pathname = url.pathname;
       if (pathname === "/health" && req.method === "GET") {
-        return json(res, 200, { version: VERSION, capabilities: await capabilities(), limits });
+        return json(res, 200, { version: VERSION, capabilities: await capabilities(), limits,
+          features: ["inspect", "extract", "render", "ocr", ...(parser.configured ? ["parse"] : [])],
+          parseReady: parser.ready });
       }
       const match = pathname.match(/^\/v1\/scopes\/([^/]+)\/jobs(?:\/([^/]+)(?:\/(cancel|retry|result|artifacts\/([^/]+)))?)?$/);
       if (!match || !SCOPE.test(match[1]) || (match[2] && !ID.test(match[2]))) throw new RunnerError("NOT_FOUND", 404);
@@ -402,6 +414,7 @@ export function createDocumentRunner({ token, tools = {}, limits: overrides = {}
       closed = true;
       clearInterval(sweep);
       for (const job of jobs.values()) cancel(job);
+      await parser.close();
       const closing = new Promise((resolve) => server.close(resolve));
       server.closeIdleConnections();
       await Promise.allSettled([...jobs.values()].map((job) => job.promise));

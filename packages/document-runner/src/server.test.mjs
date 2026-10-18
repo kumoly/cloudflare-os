@@ -15,9 +15,10 @@ const headers = { authorization: `Bearer ${token}`, "content-type": "application
 const dummyPdf = Buffer.from("%PDF-1.4\nnot a real PDF").toString("base64");
 
 async function fixture(t, options = {}) {
-  const runner = createDocumentRunner({ token, ...options });
+  const tempRoot = await mkdtemp(join(tmpdir(), "cfos-runner-test-"));
+  const runner = createDocumentRunner({ token, ...options, tempRoot });
+  t.after(async () => { await runner.close(); await rm(tempRoot, { recursive: true, force: true }); });
   const base = await runner.listen(0);
-  t.after(() => runner.close());
   async function request(path, method = "GET", value) {
     const requestOptions = { method, headers };
     if (value !== undefined) requestOptions.body = JSON.stringify(value);
@@ -41,7 +42,7 @@ async function fixture(t, options = {}) {
     }
     assert.fail("Job did not terminate");
   }
-  return { runner, base, request, start, status, done };
+  return { runner, base, request, start, status, done, tempRoot };
 }
 
 test("authentication, invalid options and invalid scopes fail without diagnostics", async (t) => {
@@ -102,15 +103,14 @@ test("input and job queue are bounded; running and queued jobs cancel and timeou
 });
 
 test("completed job retention expires and temporary directories are removed", async (t) => {
-  const before = new Set((await readdir(tmpdir())).filter((name) => name.startsWith("cfos-pdf-")));
-  const { start, done, request } = await fixture(t, {
+  const { start, done, request, tempRoot } = await fixture(t, {
     tools: { pdfinfo: join(tmpdir(), randomUUID(), "not-installed") }, limits: { expiryMs: 40 },
   });
   const job = await start();
   await done(job.id);
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal((await request(`/v1/scopes/${scope}/jobs/${job.id}`)).status, 404);
-  const after = (await readdir(tmpdir())).filter((name) => name.startsWith("cfos-pdf-") && !before.has(name));
+  const after = (await readdir(tempRoot)).filter((name) => name.startsWith("cfos-pdf-"));
   assert.deepEqual(after, []);
 });
 
@@ -164,7 +164,9 @@ test("actual Poppler and Tesseract inspect, complete text, image and OCR E2E", a
   assert.ok(actualTools, "Install Poppler and Tesseract before running document runner E2E tests");
   const { start, done, request } = await fixture(t);
   const health = await (await request("/health")).json();
-  assert.equal(health.version, "1.0.0");
+  assert.equal(health.version, "1.1.0");
+  assert.equal(health.parseReady, false);
+  assert.ok(!health.features.includes("parse"));
   assert.ok(Object.values(health.capabilities).every(Boolean));
   const inputBase64 = syntheticPdf();
   const info = await done((await start("inspect", { inputBase64 })).id);
