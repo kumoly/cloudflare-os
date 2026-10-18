@@ -49,9 +49,10 @@ export class DocumentSessionImpl extends RpcTarget implements DocumentSession {
     if (status.status !== "succeeded") throw new Error("Document job has not succeeded.");
     const job = await this.#dependencies.runner.result(id, status.operation, offset, limit);
     if (!job.result || job.totalPages === undefined) throw new Error("Invalid document result.");
-    const { textPages, imagePages, ...metadata } = job.result;
+    const { textPages, imagePages, parser, parsedPages, ...metadata } = job.result;
     return { id: job.id, operation: job.operation, metadata, totalPages: job.totalPages,
       ...(textPages ? { textPages } : {}), ...(imagePages ? { imagePages } : {}),
+      ...(parser ? { parser } : {}), ...(parsedPages ? { parsedPages } : {}),
       ...(job.nextOffset !== undefined ? { nextOffset: job.nextOffset } : {}) };
   }
   /** Check that an artifact belongs to the requested completed render job before retrieving it. */

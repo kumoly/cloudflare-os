@@ -34,7 +34,7 @@ export class DocumentsGatekeeper extends DurableObject<Cloudflare.Env, AccountPr
   implements Gatekeeper<DocumentSession> {
   async describe(): Promise<ResourceDescription> {
     return { url: "documents://pdf", title: "Documents", suggestedBindingName: "DOCUMENTS",
-      snippet: "Inspect PDFs, extract complete page text, render pages and run OCR.",
+      snippet: "Inspect PDFs, extract complete page text, render pages, run OCR and parse native table structure.",
       tsType: "DocumentSession" };
   }
   async getTypeScriptTypes(): Promise<string> { return TYPES_CODE; }
@@ -96,7 +96,7 @@ export class DocumentVerifier extends WorkerEntrypoint<Cloudflare.Env> implement
 export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
   async describe(): Promise<VendorDescription> {
     return { displayName: "Documents", url: "https://workers.cloudflare.com/", logo: ICON,
-      tagline: "Read and process PDF documents", description: "Inspect, extract, render and OCR PDFs.",
+      tagline: "Read and process PDF documents", description: "Inspect, extract, render, OCR and parse PDF structure.",
       autoProvisionsAccount: true, providesAuth: false };
   }
   @skipRpcValidation()

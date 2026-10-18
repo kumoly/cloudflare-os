@@ -1,13 +1,13 @@
 /** Supported read-only PDF processing operations. */
-export type DocumentOperation = "inspect" | "extract" | "render" | "ocr";
+export type DocumentOperation = "inspect" | "extract" | "render" | "ocr" | "parse";
 /** Bounded processing options; page numbers are one-based. */
 export type DocumentOptions = {
   operation: DocumentOperation;
-  /** Omit for all pages; rendering and OCR require at most 20 pages. */
+  /** Omit for all pages; rendering, OCR and parsing require at most 20 pages. */
   pages?: number[];
-  /** Rendering/OCR resolution, between 72 and 144 DPI. Defaults to 110. */
+  /** Rendering/OCR only; parsing rejects this option. Resolution, between 72 and 144 DPI. Defaults to 110. */
   dpi?: number;
-  /** Tesseract language expression such as eng or jpn+eng. */
+  /** OCR only; parsing rejects this option. Tesseract language expression such as eng or jpn+eng. */
   language?: string;
 };
 /** Ephemeral job lifecycle. Completed documents expire after ten minutes. */
@@ -29,6 +29,40 @@ export type DocumentImagePage = {
   mimeType: "image/png";
   bytes: number;
 };
+/** Native table/block rectangle, normalized to 0..1 from the page's top-left corner. */
+export type DocumentBox = { left: number; top: number; right: number; bottom: number };
+/** A native recognized table cell. Empty text and merged spans are preserved; no cell geometry is inferred. */
+export type DocumentTableCell = {
+  row: number; col: number; rowSpan: number; colSpan: number; text: string;
+};
+/** One native table; continuation is a parser hint, never proof of cross-page correspondence. */
+export type DocumentTable = {
+  id: string;
+  /** Zero-based parser reading order on this page. */
+  order: number;
+  bbox?: DocumentBox;
+  /** Logical page/block/table locator, never a local filesystem path. */
+  sourceLocator: string;
+  continuesPrevious: boolean;
+  rowCount: number; columnCount: number;
+  /** Zero-based cells, including empty cells; at most 5000 per page. */
+  cells: DocumentTableCell[];
+};
+/** A native reading-order block, optionally referring to a table on the same page. */
+export type DocumentBlock = {
+  id: string; order: number; type: string; text: string; bbox?: DocumentBox; tableId?: string;
+};
+/** Structured recognition for an original one-based PDF page, in requested page order. */
+export type DocumentParsedPage = {
+  page: number;
+  widthPoints?: number; heightPoints?: number;
+  blocks: DocumentBlock[];
+  tables: DocumentTable[];
+  /** Recognition diagnostics. NO_RECOGNIZED_CONTENT does not prove that a page is blank. */
+  warnings: string[];
+};
+/** Identity of the configured local structured parser. */
+export type DocumentParser = { name: "mineru"; version: string; tier: "basic" };
 /** Bounded PDF metadata; document text is obtained through extract or OCR. */
 export type DocumentMetadata = {
   pageCount: number;
@@ -43,6 +77,8 @@ export type DocumentResult = {
   metadata?: DocumentMetadata;
   textPages?: DocumentTextPage[];
   imagePages?: DocumentImagePage[];
+  parser?: DocumentParser;
+  parsedPages?: DocumentParsedPage[];
   /** Offset to use for the next result page, absent at the end. */
   nextOffset?: number;
   totalPages: number;
@@ -50,7 +86,7 @@ export type DocumentResult = {
 /**
  * Generic document processing capability, scoped to this account and workspace.
  * Supply actual PDF bytes, never a filesystem path or URL. Every call is audited as an observation.
- * Maximum input is 16 MiB / 200 PDF pages; render/OCR process at most 20 selected pages.
+ * Maximum input is 16 MiB / 200 PDF pages; render/OCR/parse process at most 20 selected pages.
  * getResult paginates whole pages (default/max 20) without truncating page text. Jobs/artifacts
  * expire after ten minutes and are unavailable in other workspaces. Retry requires retained input.
  * The deployment admin chooses disabled/optional/enabled, and users opt in under optional mode.
@@ -70,7 +106,7 @@ export interface DocumentSession {
   start(pdf: Uint8Array, options: DocumentOptions): Promise<DocumentJob>;
   /** Read a job status without returning PDF-derived content. */
   getStatus(id: string): Promise<DocumentJob>;
-  /** Read complete page text, metadata, or image handles of a completed job. */
+  /** Read complete page text, structured pages, metadata, or image handles of a completed job. */
   getResult(id: string, options?: { offset?: number; limit?: number }): Promise<DocumentResult>;
   /** Retrieve one rendered image belonging to this job and workspace. */
   getArtifact(id: string, artifactId: string): Promise<Uint8Array>;
