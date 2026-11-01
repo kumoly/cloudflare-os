@@ -9,6 +9,21 @@ def document(html="<table><tr><td>Item</td><td>Quantity</td></tr><tr><td>Sample<
 
 
 class NormalizeTest(unittest.TestCase):
+    def test_table_captions_and_footnotes_keep_text_and_their_own_geometry(self):
+        data = document()
+        data['pages'][0]['blocks'][0]['content'].extend([
+            {'type':'table_caption','content':[{'content':'Section A'}],'bbox':[.5,.1,.8,.15]},
+            {'type':'table_footnote','content':'Source note','bbox':[.1,.91,.8,.95]},
+        ])
+        page = normalize(data,[1])['pages'][0]
+        caption, note = page['blocks'][:2]
+        self.assertEqual(caption['text'],'Section A')
+        self.assertEqual(caption['bbox'],{'left':.5,'top':.1,'right':.8,'bottom':.15})
+        self.assertEqual(note['text'],'Source note')
+        self.assertNotIn('tableId',caption)
+        self.assertEqual(len(page['tables']),1)
+        self.assertEqual(len({b['id'] for b in page['blocks']}),3)
+
     def test_native_tables_empty_cells_and_spans(self):
         data=document('<table><tr><td rowspan="2">Heading</td><td></td><td colspan="2">Merged</td></tr><tr><td>2</td><td>3</td><td>4</td></tr></table>')
         result=normalize(data,[1]);table=result['pages'][0]['tables'][0]

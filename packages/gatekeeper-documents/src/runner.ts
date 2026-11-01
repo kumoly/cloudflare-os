@@ -168,6 +168,7 @@ export class DocumentRunner {
   readonly #fetch: typeof fetch;
   #verified = false;
   #parseReady = false;
+  #releaseReady = false;
   constructor(settings: RunnerSettings, scope: string, fetcher: typeof fetch = fetch) {
     this.#endpoint = runnerEndpoint(settings);
     if (!/^[0-9a-f]{64}$/.test(scope)) throw new Error("Invalid runner namespace.");
@@ -227,6 +228,14 @@ export class DocumentRunner {
     try { return JSON.parse(new TextDecoder().decode(bytes)) as unknown; }
     catch { throw new Error("Invalid document runner response."); }
   }
+  /** Release terminal artifacts within this runner's immutable workspace scope. */
+  async release(id: string): Promise<void> {
+    validateId(id);
+    await this.#verify();
+    if (!this.#releaseReady) throw new Error("Document runner does not support releasing completed jobs.");
+    const result = object(await this.#json(`/${id}`, "DELETE"));
+    if (result.released !== true) throw new Error("Invalid document release response.");
+  }
   async #request(path: string, method: string, body?: unknown): Promise<Response> {
     await this.#verify();
     let response: Response;
@@ -242,9 +251,16 @@ export class DocumentRunner {
       throw new Error("Document runner redirects are not allowed.");
     }
     if (!response.ok) {
-      await response.body?.cancel();
+      let code: string | undefined;
+      try {
+        const value = object(JSON.parse(new TextDecoder().decode(await this.#bytes(response, 1024))));
+        const allowed = ["BUSY", "INPUT_LIMIT", "INVALID_REQUEST", "INVALID_PDF", "INVALID_PAGES",
+          "INVALID_PARSE_OPTIONS", "PAGE_LIMIT", "INVALID_DPI", "INVALID_LANGUAGE", "JOB_NOT_FINISHED",
+          "INVALID_PAGINATION", "UNAUTHORIZED", "UNAVAILABLE", "INTERNAL_ERROR"];
+        if (typeof value.errorCode === "string" && allowed.includes(value.errorCode)) code = value.errorCode;
+      } catch { /* Never forward raw backend diagnostics or malformed response bodies. */ }
       if (response.status === 404) throw new Error("Document job is missing or expired.");
-      throw new Error(`Document runner request failed (${response.status}).`);
+      throw new Error(`Document runner request failed (${response.status})${code ? `: ${code}` : ""}.`);
     }
     return response;
   }
@@ -256,6 +272,7 @@ export class DocumentRunner {
     if (this.#verified && !refresh) return;
     this.#verified = false;
     this.#parseReady = false;
+    this.#releaseReady = false;
     let response: Response;
     try {
       response = await this.#fetch(new URL("/health", this.#endpoint), {
@@ -281,6 +298,7 @@ export class DocumentRunner {
           health.features.some(feature => typeof feature !== "string" || feature.length > 64) ||
           typeof health.parseReady !== "boolean") throw new Error("Invalid document runner features.");
       this.#parseReady = health.features.includes("parse") && health.parseReady;
+      this.#releaseReady = health.features.includes("release");
     }
     this.#verified = true;
   }

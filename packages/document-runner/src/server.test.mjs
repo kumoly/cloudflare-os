@@ -90,6 +90,7 @@ test("input and job queue are bounded; running and queued jobs cancel and timeou
   assert.equal(tooLarge.status, 413);
   const running = await start();
   const queued = await start();
+  assert.equal((await request(`/v1/scopes/${scope}/jobs/${running.id}`, "DELETE")).status, 409);
   assert.equal((await request(`/v1/scopes/${scope}/jobs`, "POST", { operation: "inspect", inputBase64: dummyPdf })).status, 429);
   assert.equal((await request(`/v1/scopes/${scope}/jobs/${queued.id}/cancel`, "POST")).status, 200);
   assert.equal((await done(queued.id)).status, "cancelled");
@@ -100,6 +101,39 @@ test("input and job queue are bounded; running and queued jobs cancel and timeou
   const result = await done(timed.id);
   assert.equal(result.status, "failed");
   assert.equal(result.errorCode, "TIMEOUT");
+});
+
+test("terminal release frees capacity without deleting another scope's jobs", async (t) => {
+  const { start, done, request } = await fixture(t, {
+    tools: { pdfinfo: join(tmpdir(), randomUUID(), "not-installed") },
+    limits: { jobs: 2, retainedBytes: 256 },
+  });
+  const retained = await start(); await done(retained.id);
+  for (let i = 0; i < 40; i++) {
+    const job = await start(); await done(job.id);
+    assert.equal((await request(`/v1/scopes/${otherScope}/jobs/${job.id}`, "DELETE")).status, 404);
+    assert.equal((await request(`/v1/scopes/${scope}/jobs/${job.id}`, "DELETE")).status, 200);
+    assert.equal((await request(`/v1/scopes/${scope}/jobs/${job.id}`)).status, 404);
+    assert.equal((await request(`/v1/scopes/${scope}/jobs/${retained.id}`)).status, 200);
+  }
+});
+
+test("large valid base64 input remains bounded and malformed padding is rejected", async (t) => {
+  const { start, done, request } = await fixture(t);
+  const original = Buffer.from(syntheticPdf(), "base64");
+  for (const size of [4_000_000, 16 * 1024 * 1024]) {
+    const pdf = Buffer.alloc(size, 32); original.copy(pdf);
+    const job = await start("inspect", { inputBase64: pdf.toString("base64") });
+    const result = await done(job.id);
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.result.pageCount, 2);
+    assert.equal((await request(`/v1/scopes/${scope}/jobs/${job.id}`, "DELETE")).status, 200);
+  }
+  for (const inputBase64 of ["====", "A===", "YQ= =", "YQ=", "YQ===", "YQ==\n", "YQ==AAAA"]) {
+    const response = await request(`/v1/scopes/${scope}/jobs`, "POST", { operation: "inspect", inputBase64 });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).errorCode, "INVALID_REQUEST");
+  }
 });
 
 test("completed job retention expires and temporary directories are removed", async (t) => {

@@ -26,6 +26,34 @@ function session(backend: DocumentRunner, authorize = vi.fn(async () => {}), act
 }
 function json(value: unknown) { return Response.json(value); }
 
+it("releases only scoped terminal artifacts after authorization", async () => {
+  const events: string[] = [];
+  const fetcher = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).endsWith("/health")) return json({ ...health, version: "1.1.0", features: ["release"], parseReady: false });
+    events.push(`${init?.method} ${new URL(String(url)).pathname}`);
+    return json({ released: true });
+  });
+  await session(runner(fetcher), vi.fn(async () => { events.push("authorize"); })).release("job-one");
+  expect(events).toEqual(["authorize", `DELETE /v1/scopes/${"a".repeat(64)}/jobs/job-one`]);
+  const deniedFetch = vi.fn();
+  await expect(session(runner(deniedFetch), vi.fn(async () => { throw new Error("Denied"); })).release("job-one")).rejects.toThrow("Denied");
+  expect(deniedFetch).not.toHaveBeenCalled();
+  await expect(session(runner(vi.fn(async () => json(health)))).release("job-one"))
+    .rejects.toThrow("does not support releasing");
+});
+
+it("preserves only allowlisted bounded runner error codes", async () => {
+  for (const [body, expected] of [
+    [{ errorCode: "BUSY", message: "private native output" }, "Document runner request failed (429): BUSY."],
+    [{ errorCode: "PRIVATE_NATIVE_OUTPUT" }, "Document runner request failed (429)."],
+    [{ errorCode: "BUSY", message: "x".repeat(2048) }, "Document runner request failed (429)."],
+  ] as const) {
+    const fetcher = vi.fn(async (url: RequestInfo | URL) => String(url).endsWith("/health")
+      ? json(health) : Response.json(body, { status: 429 }));
+    await expect(session(runner(fetcher)).getStatus("job-one")).rejects.toThrow(expected);
+  }
+});
+
 it("accepts only explicitly configured HTTPS or loopback HTTP endpoints", () => {
   expect(runnerEndpoint(settings).hostname).toBe("127.0.0.1");
   expect(() => runnerEndpoint({})).toThrow("not configured");

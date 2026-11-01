@@ -34,6 +34,9 @@ All HTTP endpoints require `Authorization: Bearer <token>`. Versioned API:
 - `POST /v1/scopes/{scope}/jobs/{id}/retry`: a new job from a terminal job's
   retained input. Start, cancel and retry return `{id,operation,status}`.
 - `DELETE /v1/scopes/{scope}/jobs`: cancel and erase all data for that scope.
+- `DELETE /v1/scopes/{scope}/jobs/{id}`: release one terminal job's input,
+  result and images after the caller saves them; returns `{released: true}`.
+  Running/queued jobs return `409 JOB_NOT_FINISHED`. Health advertises `release`.
 
 The service accepts at most 16 MiB per PDF and 200 pages; rendering/OCR processes
 at most 20 selected pages, at 72–144 dpi and at most 4 million pixels per page.
@@ -43,6 +46,10 @@ fails explicitly rather than truncating text. There are at most 32 retained jobs
 120-second job deadline. Completed inputs/results expire after 10 minutes.
 Subprocess working directories are private and removed on all completion paths;
 inputs retained for retries are bounded in memory. Restarting loses jobs.
+Callers should release terminal jobs after consuming all result pages/images.
+The 32-job limit includes retained terminal jobs; `429 BUSY` can therefore occur
+with no active processing. Retrying at a lower frequency does not release space.
+Base64 validation uses constant stack space throughout the advertised input range.
 
 This is an authenticated local service, not an operating-system sandbox for PDF
 parsers. The initial backend trusts installed tool binaries and host admin
@@ -60,7 +67,7 @@ CLI test fails if tools are absent. Public CI installs the required binaries.
 Runner version `1.1.0` adds `operation: "parse"`. This is an optional execution
 backend. The original four operations and their budgets remain available when
 MinerU is absent. Health retains the existing tool capability booleans and adds
-`features` (operation names) and `parseReady`. Configured MinerU is advertised in
+`features` (processing and lifecycle capabilities) and `parseReady`. Configured MinerU is advertised in
 `features`; `parseReady` becomes true after exact-version, offline model preloading.
 A deployment should wait for readiness before offering structured parsing.
 

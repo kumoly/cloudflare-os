@@ -85,6 +85,12 @@ export class DocumentSessionImpl extends RpcTarget implements DocumentSession {
     await this.#authorize("Retry document processing");
     return receipt(await this.#dependencies.runner.retry(id));
   }
+  /** Free only this workspace's terminal processing artifacts, never its source files. */
+  async release(id: string): Promise<void> {
+    validateId(id);
+    await this.#authorize("Release completed document job");
+    await this.#dependencies.runner.release(id);
+  }
   [Symbol.dispose](): void {
     this.#dependencies.approvalQueue[Symbol.dispose]?.();
   }

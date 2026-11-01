@@ -59,7 +59,7 @@ function requestInput(value, limits) {
   if (!value || typeof value !== "object" || Array.isArray(value)
       || Object.keys(value).some((key) => !["operation", "inputBase64", "pages", "dpi", "language"].includes(key))
       || !OPERATIONS.has(value.operation) || typeof value.inputBase64 !== "string"
-      || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.inputBase64)) {
+      || !validBase64(value.inputBase64)) {
     throw new RunnerError("INVALID_REQUEST");
   }
   const input = Buffer.from(value.inputBase64, "base64");
@@ -79,6 +79,18 @@ function requestInput(value, limits) {
     throw new RunnerError("INVALID_LANGUAGE");
   }
   return { input, operation: value.operation, pages: value.pages, dpi, language };
+}
+
+// Repeated regex groups exhaust V8's stack on valid multi-megabyte documents.
+function validBase64(value) {
+  if (value.length % 4 !== 0) return false;
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  for (let i = 0; i < value.length - padding; i++) {
+    const c = value.charCodeAt(i);
+    if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+        || (c >= 48 && c <= 57) || c === 43 || c === 47)) return false;
+  }
+  return true;
 }
 
 function summary(job) {
@@ -318,7 +330,7 @@ export function createDocumentRunner({ token, tools = {}, limits: overrides = {}
       const pathname = url.pathname;
       if (pathname === "/health" && req.method === "GET") {
         return json(res, 200, { version: VERSION, capabilities: await capabilities(), limits,
-          features: ["inspect", "extract", "render", "ocr", ...(parser.configured ? ["parse"] : [])],
+          features: ["inspect", "extract", "render", "ocr", "release", ...(parser.configured ? ["parse"] : [])],
           parseReady: parser.ready });
       }
       const match = pathname.match(/^\/v1\/scopes\/([^/]+)\/jobs(?:\/([^/]+)(?:\/(cancel|retry|result|artifacts\/([^/]+)))?)?$/);
@@ -349,6 +361,15 @@ export function createDocumentRunner({ token, tools = {}, limits: overrides = {}
       }
       const job = jobs.get(id);
       if (!job || job.scope !== scope) throw new RunnerError("NOT_FOUND", 404);
+      if (!action && req.method === "DELETE") {
+        if (!TERMINAL.has(job.status)) throw new RunnerError("JOB_NOT_FINISHED", 409);
+        // Status may become terminal before temporary-file cleanup finishes.
+        await job.promise;
+        if (jobs.delete(id)) retainedBytes -= (job.resultBytes ?? 0) + job.input.length;
+        const queuedIndex = queue.indexOf(job);
+        if (queuedIndex !== -1) queue.splice(queuedIndex, 1);
+        return json(res, 200, { released: true });
+      }
       if (!action && req.method === "GET") return json(res, 200, summary(job));
       if (action === "result" && req.method === "GET") {
         if (job.status !== "succeeded") throw new RunnerError("JOB_NOT_FINISHED", 409);
