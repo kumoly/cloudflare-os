@@ -14,7 +14,8 @@
     "build": "tsc --noEmit",
     "test:prebuild": "vp run -F @gadgets/integration-tests build:test-gatekeeper && vp run -F @gadgets/github-gatekeeper build:integration-worker && vp run -F @gadgets/google-gatekeeper build:integration-worker && vp run -F @gadgets/gatekeeper-context build:integration-worker && vp run -F @gadgets/integration-tests build:upgrade-base",
     "test:run": "pnpm run test:prebuild && vitest run",
-    "test:watch": "pnpm run test:prebuild && vitest"
+    "test:watch": "pnpm run test:prebuild && vitest",
+    "test:client-compat": "vp run -F @gadgets/workshop-backend build:integration-worker && node scripts/build-client-compat.ts && vitest run --config vitest.client-compat.config.ts"
   },
   "dependencies": {
     "@gadgets/gatekeeper-kit": "workspace:*",

@@ -181,3 +181,23 @@ type 'function or ExportedHandler'.
 ```
 
 Type-only exports are fine (they erase). Anything else has to stay module-private.
+
+## Released OpenClaw client and Workshop upgrades
+
+Run `pnpm --filter @gadgets/integration-tests test:client-compat`. This dedicated
+uncached entrypoint builds the candidate Workshop, installs the separately locked
+released client fixture and builds a pinned historical Workshop into a self-contained
+bundle. It runs without production credentials, a weather provider or an LLM.
+
+The fixture executes the published GadgetClient in a child Node process over real
+WebSocket RPC. One case starts a fresh candidate; another starts the historical
+backend, creates the account/session/workspace/Gadget, verifies the client, swaps in
+the candidate with storage intact, and verifies the same token and IDs without login,
+reseeding or business-call retries. Only one Worker is booted, so `server.update()`
+completes that Worker's reload before the post-upgrade call. This does not use the
+multi-Worker reload race described above.
+
+The client runtime files are frozen by SHA256 with release provenance. The optional
+OpenClaw SDK registration layer is covered by the separate host-native acceptance,
+not this no-LLM CI suite. Advancing either baseline requires explicit compatibility
+review. The dedicated CI job is part of the required `Build and test` aggregate.

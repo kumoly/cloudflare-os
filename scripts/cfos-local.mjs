@@ -111,6 +111,14 @@ async function smoke(list, app) {
 const restart = () => execFileSync('/bin/launchctl', ['kickstart', '-k', `gui/${process.getuid()}/ai.kumoly.cloudflare-os`], { stdio: 'inherit' });
 const frontend = app => command('pnpm exec vp run -F @gadgets/workshop-frontend --cache build:assets', app);
 
+/** Require the host's installed-client gate; a missing configuration never silently skips it. */
+export function verifyInstalledClient(service, app, receipt) {
+  const acceptance = json(resolve(service, 'config/client-acceptance.json'));
+  if (!Array.isArray(acceptance.command) || !acceptance.command.length || acceptance.command.some(arg => typeof arg !== 'string')) throw new Error('Configure the required client acceptance command.');
+  const result = spawnSync(acceptance.command[0], acceptance.command.slice(1), { cwd: app, stdio: 'inherit', timeout: 300_000, env: { ...process.env, CFOS_ACCEPTANCE_RECEIPT: receipt } });
+  if (result.error || result.status !== 0) throw new Error('Installed client acceptance failed.');
+}
+
 async function main() {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     source: { type: 'string', default: process.cwd() }, service: { type: 'string' }, baseline: { type: 'string' },
@@ -178,7 +186,9 @@ async function main() {
     if (!values.smoke.length) throw new Error('Supply the host login/persistence smoke commands.');
     mkdirSync(lock); locked = true;
     writeFileSync(resolve(lock, 'pid'), `${process.pid}\n`, { mode: 0o600 });
+    const verifyClient = receipt => verifyInstalledClient(service, app, receipt);
     commands(values.smoke, app);
+    if (operation !== 'rollback') verifyClient(statePath);
     if (operation === 'rollback') {
       // Recheck while holding the same operation lock as backups and updates.
       for (const item of changes) if (!same(runtimeEntry(app, item.path), item.after)) throw new Error('Runtime changed while acquiring the lock.');
@@ -186,6 +196,7 @@ async function main() {
       if (mode === 'frontend') frontend(app);
       if (mode === 'restart') restart();
       await smoke(values.smoke, app);
+      verifyClient(statePath);
       saveJson(resolve(runDir, 'rollback.json'), { status: 'rolled-back', completedAt: new Date().toISOString(), seconds: (Date.now() - started) / 1000 });
       console.log('Local source rollback passed login and persistence checks.');
       return;
@@ -220,6 +231,12 @@ async function main() {
     const receipt = { schemaVersion: 1, channel: 'local-dev', sourceCommit: sourceReport.commit, sourceTree: sourceReport.tree, mode, files: target,
       rollbackDirectory: runDir, checkCommands: values.check, acceptanceCommands: values.accept, completedAt: new Date().toISOString(),
       seconds: (Date.now() - started) / 1000, smoke: 'passed', featureAcceptance: values.accept.length ? 'passed' : 'not-applicable', fullCI: 'public-background', stableRelease: false };
+    const candidateReceipt = resolve(runDir, 'candidate.json');
+    saveJson(candidateReceipt, receipt);
+    verifyClient(candidateReceipt);
+    planChanges(app, target, target);
+    receipt.completedAt = new Date().toISOString();
+    receipt.seconds = (Date.now() - started) / 1000;
     saveJson(statePath, receipt);
     saveJson(resolve(runDir, 'result.json'), receipt);
     console.log(`Local CFOS updated: ${sourceReport.commit.slice(0, 8)}; ${receipt.seconds}s; ${mode}; smoke passed.`);
@@ -231,6 +248,7 @@ async function main() {
         if (mode === 'frontend') frontend(app);
         if (mode === 'restart') restart();
         await smoke(values.smoke, app);
+        verifyInstalledClient(service, app, statePath);
         saveJson(resolve(runDir, 'result.json'), { status: 'failed-and-rolled-back', smoke: 'passed' });
         console.error('Candidate failed; previous source restored and smoke passed.');
       } catch {
