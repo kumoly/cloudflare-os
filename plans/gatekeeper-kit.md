@@ -772,8 +772,11 @@ export function escapeObservationValue(value: string): string;
 export type ObservationScope =
   | { kind: "baseline" }                        // admission already covers this disclosure
   | { kind: "collections"; ids: readonly string[] }    // per-set verification; an empty array is refused
-  | { kind: "withholdFromObservers" };          // withhold from every admitted observer
-export type ObservationInput = Omit<ObservationDescription, "excludeObservers">;
+  | { kind: "withholdFromObservers" }           // withhold from every admitted observer
+  | { kind: "subresources"; ids: readonly string[] };  // the Workshop checks these; `[]` is accepted
+export type ObservationInput = Omit<ObservationDescription, "excludeObservers" | "subresources">;
+export function observerAccessVerifier<V>(opts: Pick<ObserverTrackerOptions<V>,
+  "hasCollectionAccess" | "concurrency">): VerifyObserverAccess;   // Gatekeeper.verifyObserverAccess
 export class ObservationGate {
   constructor(queue: RpcStub<ApprovalQueue>, strategy: ObserverStrategy);
   authorize(input: ObservationInput, scope: ObservationScope): Promise<void>;
@@ -808,6 +811,20 @@ observer sees everything read here — a truthful owner-only read under them mea
 belongs on C, and a read the premise covers should say `baseline`. Because the gate is the only
 source of that field, there is no set-union merge left to do. Sessions call the gate for every read
 instead of the raw queue.
+
+**`subresources` bypasses the strategy.** When an observation reports `subresources`, the Workshop
+attributes the read to its chat or gadget, checks that context's audience through
+`verifyObserverAccess()`, and rechecks the recorded ids at admission (`docs/observers.md` §10). A
+gatekeeper that also ran `prepare` for such a read would keep growing the binding-wide history
+whose admission refusals the per-context check exists to replace, so the arm calls no strategy
+method, and the gate owns `subresources` as it owns `excludeObservers`. The kernel decides per
+observation, so this is a scope rather than a strategy or gate mode: a binding converts read by
+read, and the strategy keeps `addObserver()` enforcing its baseline, the history recorded before
+conversion and every read not yet converted. `observerAccessVerifier` reuses the tracker's oracle
+shape but not its error policy: the tracker excludes an observer whose stored verifier throws, so
+one dead stub cannot fail every read, while the Workshop asks with fresh verifiers and expects a
+throw when access cannot be determined, so the throw propagates. It stores nothing, since the same
+observer id may arrive with another account's verifier.
 
 **A proven refusal reclaims only this read's reservations.** For withheld reads, `discard()` deletes
 the read's `observer-withhold:` marker. For set-scoped reads it releases the check's per-storage
@@ -1077,8 +1094,9 @@ these actions — the kit does, so it is the only one that both strands dependen
 The one terminal failure that does **not** cascade is an orphaned claim: its stored answer says the
 effect is unknown, so "was not applied" cannot be asserted over its dependents — the argument that
 keeps `claimed` out of `listUndecided` below, which converting the claim makes no more decidable.
-They stay pending, fail at the provider if the effect never landed, and clear by rejection —
-exactly a corpus dependent whose creator never resolved.
+They stay pending while it is, failing their applies on the unresolved reference. Rejecting the
+claim withdraws it, and nothing can bind its reference after that, so the rejection strands the
+dependents whose references it never bound, as rejecting a pending action does.
 
 **A dependent is refused at submit once nothing can provide its reference.** The cascade scans
 submitted records, so a dependent submitted *after* its provider was rejected escaped it, and every
@@ -2370,6 +2388,33 @@ lands, so a failed page is advertised in full when re-offered. `withhold` names 
 cannot supply yet — simulated heads of queued pushes — and is consulted per batch, so a push queued
 mid-walk is honoured.
 
+### 4.23 `./subresource-ids`
+
+```ts
+export type SubresourceFragment = { name: string; id: string };   // both non-empty
+export type SubresourceId = { namespace?: string;                // non-empty when present
+  fragments: readonly SubresourceFragment[] };                     // at least one
+export function formatSubresourceId(value: SubresourceId): string;
+export function parseSubresourceId(id: string): SubresourceId;   // canonical spelling only
+```
+
+One encoding for `ObservationDescription.subresources`, so gatekeepers do not each invent a
+delimiter scheme. The Workshop treats the IDs as opaque, so the format belongs to the kit, not
+`workshop-shared`. Every component is `encodeURIComponent`-escaped and joined by `/`. Escaping keeps
+`/` out of every component, and each fragment contributes two, so an odd component count marks the
+leading namespace without a separate marker.
+
+**Fragments name resources, not predicates.** `gmail/inbox/<address>` identifies a mailbox. That
+no collaborator may ever see it is the verifier's mapping from that kind of resource to a check,
+not something the ID asserts. That keeps one vocabulary across gatekeepers whose policies differ.
+The namespace is a product family (Google's `gmail`, `drive`, `bigquery`), never the
+gatekeeper's own name; a single-product gatekeeper omits it.
+
+**One spelling per value.** The Workshop deduplicates and indexes requirements by string, so
+`parseSubresourceId` refuses any spelling `formatSubresourceId` would not produce, such as a
+lowercase or needless escape, instead of decoding it to a nearby resource. The 512-code-unit ID
+bound stays the overseer's to enforce; the kit does not keep a second copy.
+
 ## 5. Layer 2: the assembly
 
 **Layer-1 reconciliation, 2026-09-05 — the leaf contracts this section now builds on.** Observation
@@ -2935,7 +2980,7 @@ These are load-bearing; the fixture suite (§7 step 11) exists to prove each one
 - **workerd for nonce tests.** `crypto.subtle.timingSafeEqual` does not exist in Node, so the
   kit runs two vitest projects: `vitest.config.ts` (Node, pure modules: actions, observers,
   credentials, auth-retry, simulation, cache, connect-pages, endpoint, http-errors,
-  response-body, spec, http routing) and
+  response-body, subresource-ids, spec, http routing) and
   `vitest.worker.config.ts` (workerd: connect-nonce, connect-handshake, credential-expiry,
   cursors, the action queue, and the fixture). The workerd project loads
   `scripts/assert-workerd.ts` so a broken pool fails loudly. `connect-pages` and `endpoint` are
@@ -3103,8 +3148,8 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
    refused at the type level; `claimBeforeApply` plus a plain throw restores `pending` and a second apply
    reaches the provider; an `ActionApplyError` records the failure, answers every replay from the
    record with no provider call, and is cleared only by `reject`; a claim a second bind finds
-   over the same journal is converted to `APPLY_OUTCOME_UNKNOWN_MESSAGE` by both verbs without
-   running a handler; and a journal write that fails *after* the handler succeeded leaves the
+   over the same journal is converted to `APPLY_OUTCOME_UNKNOWN_MESSAGE` by apply and removed as
+   `rejected` by the first reject, neither verb running a handler; and a journal write that fails *after* the handler succeeded leaves the
    record `claimed`, fires no hook, and is reported unknown on the next attempt rather than being
    rolled back to `pending`. `SerialTaskQueue`
    ordering and rejection isolation live in the **workerd** project

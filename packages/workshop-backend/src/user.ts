@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -14,13 +14,16 @@ import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
 import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
+import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
 import type { AdminSettings } from "./admin-settings.js";
 import { deleteBlueprintContent } from "./blueprint-archive.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
-import { deliver, registerDevice } from "./notification-service.js";
+import {
+  authorizeDevice, deliver, registerAuthorizedDevice, registerDevice,
+} from "./notification-service.js";
 import {
   DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
   type DeviceSessionCredential, type DeviceSessionHandoff,
@@ -130,7 +133,7 @@ export type UserChatContext = {
   quickModel?: AiModelConfig;
 }
 
-function isFullyCreated(g: GadgetRecord): g is GadgetMetadataWithTimestamps {
+function isFullyCreated(g: GadgetRecord): g is WorkspaceMetadataWithTimestamps {
   return g.lastActive !== undefined;
 }
 
@@ -470,9 +473,32 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.storage.passwordHashHash.get() !== null;
   }
 
-  /** Exchange the native app's one-time device registration for that device's push subscription. */
-  async registerNotificationDevice(deviceRegistrationId: string): Promise<void> {
-    let { deviceKey, subscriptionId } = await registerDevice(this.env, deviceRegistrationId);
+  /** Vouch for this authenticated user using the installation's registered signing identity. */
+  async authorizeNotificationDevice(): Promise<string> {
+    return authorizeDevice(this.env, this.#notificationSubject);
+  }
+
+  /**
+   * Exchange a native app's one-time device registration, or a browser's Web Push subscription,
+   * for that device's push subscription.
+   */
+  async registerNotificationDevice(registration: string | WebPushSubscription): Promise<void> {
+    this.#storeNotificationSubscription(
+        await registerDevice(this.env, registration, this.#notificationSubject));
+  }
+
+  /** Exchange a CFOS-authorized native registration under this User DO's central subject. */
+  async registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void> {
+    this.#storeNotificationSubscription(await registerAuthorizedDevice(
+        this.env, deviceRegistrationId, this.#notificationSubject));
+  }
+
+  get #notificationSubject(): string {
+    return this.ctx.id.toString();
+  }
+
+  #storeNotificationSubscription(
+      { deviceKey, subscriptionId }: Awaited<ReturnType<typeof registerDevice>>): void {
     this.storage.notificationSubscriptions.put(
         { ...this.storage.notificationSubscriptions.get(), [deviceKey]: subscriptionId });
   }
@@ -521,7 +547,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (acknowledged) return;
     let subscriptions = Object.entries(this.storage.notificationSubscriptions.get());
     let results = await Promise.allSettled(subscriptions.map(async ([deviceKey, subscriptionId]) => {
-      if (await deliver(this.env, subscriptionId, notification)) return;
+      if (await deliver(this.env, this.#notificationSubject, subscriptionId, notification)) return;
       // This subscription is dead; the device gets a new one when its app next opens. Keep one it
       // registered while this delivery was in flight.
       let { [deviceKey]: current, ...others } = this.storage.notificationSubscriptions.get();
@@ -560,17 +586,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Called by the overseer every time a collaborator opens a shared gadget.
+   * Called by the overseer every time a collaborator opens a shared workspace.
    * Creates the record on first open; updates lastActive on subsequent opens.
    *
    * `role` is cached so listings built from this DO can offer the actions it permits without
    * reopening the workspace to ask. Presentation only: every operation is still authorized by the
    * Overseer when attempted.
    */
-  async recordSharedGadgetOpen(
-      gadgetId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
+  async recordSharedWorkspaceOpen(
+      workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
   ): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+    let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
       throw new Error("User owns this workspace; it's not shared with them.");
     }
@@ -583,9 +609,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       record.role = role;
       this.storage.gadgets.put(record);
     } else {
-      // First time opening this shared gadget.
+      // First time opening this shared workspace.
       this.storage.gadgets.put({
-        id: gadgetId,
+        id: workspaceId,
         title,
         owner: ownerProfile,
         role,
@@ -600,23 +626,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * comes from the Overseer's live sharing graph; this only keeps the listing's available actions
    * accurate after a collaborator is downgraded.
    */
-  async updateSharedGadgetRole(gadgetId: string, role: CollaboratorRole): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updateSharedWorkspaceRole(workspaceId: string, role: CollaboratorRole): Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record?.owner) return;
     record.role = role;
     this.storage.gadgets.put(record);
   }
 
   /**
-   * Forgets a gadget shared with this user: drops it from their workspace listing and its outputs
+   * Forgets a workspace shared with this user: drops it from their workspace listing and its outputs
    * from their Outputs index. Called both when the user dismisses it and when their access is
    * revoked (Overseer.refreshAffectedCollaboratorListings()); it grants and revokes nothing.
    */
-  async forgetSharedGadget(gadgetId: string): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+  async forgetSharedWorkspace(workspaceId: string): Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
     if (record && record.owner) {
-      this.storage.gadgets.delete(gadgetId);
-      this.storage.outputs.byWorkspace.delete(gadgetId);
+      this.storage.gadgets.delete(workspaceId);
+      this.storage.outputs.byWorkspace.delete(workspaceId);
     }
   }
 
@@ -704,8 +730,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #putModel(profile: AiChatAuthorInfo, config: AiModelConfig, models: GatewayModels | null) {
-    if (models && !models.providers.has(config.provider)) {
+    if (models && !models.addableProviders.includes(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
+    }
+    if (config.provider === "cloudflare-auto-router") {
+      throw new Error("The Auto Router model runs only through an AI Gateway.");
     }
     for (let limit of [config.contextWindow, config.outputLimit]) {
       if (limit !== undefined && !(Number.isSafeInteger(limit) && limit > 0)) {
@@ -730,16 +759,24 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async setQuickModel(id: string | null): Promise<void> {
+    if (id !== null && isCloudflareLimitsEnabled(this.env)) {
+      throw new Error("Quick tasks run on the deployment's own model while it applies " +
+          "Cloudflare usage limits.");
+    }
     this.storage.quickModel.put(id);
   }
 
   async getQuickModel(): Promise<null | string> {
-    let result = this.storage.quickModel.get();
-    if (result && this.storage.aiModels.get(result)) {
-      return result;
-    } else {
-      return null;
-    }
+    return this.#chosenQuickModel(await getGatewayModels(this.env))?.profile.id ?? null;
+  }
+
+  // The quick model the user chose, while it resolves. A gateway model is not stored here, so
+  // the choice is looked up the way a chat's model is. Quick tasks are counted against no usage
+  // limit, so a deployment that applies Cloudflare limits keeps them on its own quick model.
+  #chosenQuickModel(models: GatewayModels | null): UserAiModelRecord | undefined {
+    let id = this.storage.quickModel.get();
+    if (!id || isCloudflareLimitsEnabled(this.env)) return undefined;
+    return this.#resolveModel(id, models);
   }
 
   async getPreferredModel(): Promise<string | null> {
@@ -869,19 +906,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
 
-    // Resolve the quick model (used for lightweight tasks like title generation).
-    if (models) {
-      // In AI Gateway mode, always use the hardcoded quick model.
-      result.quickModel = models.gateway.getQuickModelConfig();
-    } else {
-      let quickModelId = this.storage.quickModel.get();
-      if (quickModelId) {
-        let quickModel = this.storage.aiModels.get(quickModelId);
-        if (quickModel) {
-          result.quickModel = quickModel.config;
-        }
-      }
-    }
+    // Resolve the quick model (used for lightweight tasks like title generation): the user's
+    // choice where it may be used (see #chosenQuickModel), else in AI Gateway mode the
+    // deployment's own.
+    result.quickModel = this.#chosenQuickModel(models)?.config ??
+        models?.gateway.getQuickModelConfig();
     return result;
   }
 
@@ -910,18 +939,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
   }
 
-  async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    let result: GadgetMetadataWithTimestamps[] = [];
-    for (let gadget of this.storage.gadgets.list()) {
-      if (isFullyCreated(gadget)) {
-        result.push(gadget);
+  async listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]> {
+    let result: WorkspaceMetadataWithTimestamps[] = [];
+    for (let workspace of this.storage.gadgets.list()) {
+      if (isFullyCreated(workspace)) {
+        result.push(workspace);
       }
     }
     return result;
   }
 
-  async updateTitle(gadgetId: string, title: string) {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updateTitle(workspaceId: string, title: string) {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record) {
       throw new Error("No such workspace belonging to user.");
     }
@@ -929,8 +958,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  async updatePinned(gadgetId: string, pinned: boolean) {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updatePinned(workspaceId: string, pinned: boolean) {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record) {
       throw new Error("No such workspace belonging to user.");
     }
@@ -938,32 +967,32 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  async getGadget(id: string): Promise<GadgetMetadata | null> {
+  async getWorkspace(id: string): Promise<WorkspaceMetadata | null> {
     return this.storage.gadgets.get(id) || null;
   }
 
-  async newGadget(id: string, title: string): Promise<void> {
+  async newWorkspace(id: string, title: string): Promise<void> {
     let created = new Date();
     this.storage.gadgets.put({id, title, created});
   }
 
-  async ensureGadgetRegistered(id: string, title: string): Promise<void> {
+  async ensureWorkspaceRegistered(id: string, title: string): Promise<void> {
     if (this.storage.gadgets.get(id)) return;
-    await this.newGadget(id, title);
+    await this.newWorkspace(id, title);
   }
 
-  async setGadgetLastActive(id: string, time: Date, totalCost: number | undefined): Promise<void> {
-    let gadget = this.storage.gadgets.get(id);
-    if (gadget) {
-      gadget.lastActive = time;
+  async setWorkspaceLastActive(id: string, time: Date, totalCost: number | undefined): Promise<void> {
+    let workspace = this.storage.gadgets.get(id);
+    if (workspace) {
+      workspace.lastActive = time;
       if (totalCost) {
-        gadget.totalCost = totalCost;
+        workspace.totalCost = totalCost;
       }
-      this.storage.gadgets.put(gadget);
+      this.storage.gadgets.put(workspace);
     }
   }
 
-  async deleteGadget(id: string): Promise<void> {
+  async deleteWorkspace(id: string): Promise<void> {
     this.storage.gadgets.delete(id);
     this.storage.outputs.byWorkspace.delete(id);
   }
@@ -2214,11 +2243,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Mint a verifier from one of THIS user's connected accounts, identified by accountId. The
-   * overseer passes the returned verifier to a gatekeeper's `addObserver()` so the gatekeeper can
-   * check whether this user is allowed to observe the data read through it, or to its
-   * `applyCreation()` to create the resource in this account. Returns null if the
-   * account no longer exists (or never existed). Throws if the account belongs to a different
-   * vendor (not a legitimate UI state — only reachable by bypassing client-side filtering).
+   * overseer passes the returned verifier to a gatekeeper's `addObserver()` or
+   * `verifyObserverAccess()` so the gatekeeper can check whether this user is allowed to observe
+   * the data read through it, or to a gatekeeper's `applyCreation()` to create the resource in
+   * this account. Returns null if the account no longer exists (or never existed). Throws if the
+   * account belongs to a different vendor (not a legitimate UI state — only reachable by bypassing
+   * client-side filtering).
    *
    * Account *selection* (which of the user's accounts to use for a given binding) is done by the
    * frontend; this method validates and resolves a chosen account to its verifier.

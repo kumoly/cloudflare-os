@@ -10,7 +10,7 @@
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type {
-  AccountDescription, ActionDescription, ConnectHandoff, GatekeeperUser, GitCache, HookController,
+  AccountDescription, ActionDescription, ActionKind, ConnectHandoff, GatekeeperUser, GitCache, HookController,
   HookDescription, GitPullHints, GitPullTransfer,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GitHubGatekeeperImpl, GitHubHookDriver as GitHubHookDriverImpl, type GitHubVerifierApi } from "../../src/github.js";
@@ -136,8 +136,14 @@ export type MergePullRequestActionData = Extract<
 export type IssueEditActionData = Extract<
   Parameters<GitHubGatekeeperImpl["submitActionForApproval"]>[1], { type: "setTitle" | "changeState" }>;
 
+/** Any of github.ts's (unexported) action records, read off the real submit signature. */
+export type GitHubActionData = Parameters<GitHubGatekeeperImpl["submitActionForApproval"]>[1];
+
 /** The listing methods `TestHooks.listingPages` drives. */
 export type ListingMethod = "listIssues" | "searchIssues" | "listPullRequests" | "searchPullRequests";
+
+/** One call of a `TestHooks.sessionRead` chain: a method on the previous call's result. */
+export type SessionCall = { method: string; args?: unknown[] };
 
 type TestExports = {
   GitHubGatekeeperImpl(options: { props: GatekeeperProps }):
@@ -170,11 +176,8 @@ type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitPull"> & {
     : Promise<CreatePullRequestActionData>;
   prepareMergePullRequest(pullId: string, options?: GitHubPullRequestMergeOptions)
     : Promise<MergePullRequestActionData>;
-  submitActionForApproval(
-    queue: unknown,
-    action: PushActionData | CreatePullRequestActionData | PostReviewActionData | MergePullRequestActionData
-      | IssueEditActionData,
-    description: ActionDescription): Promise<void>;
+  submitActionForApproval(queue: unknown, action: GitHubActionData, description: ActionDescription): Promise<void>;
+  getAutoApprovableActions(): Promise<ActionKind[]>;
   applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void>;
   rejectAction(actionId: number): Promise<undefined | { restart?: boolean }>;
   revertAction(actionId: number): Promise<undefined | { message?: string; canRetry?: boolean }>;
@@ -200,6 +203,7 @@ type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitPull"> & {
   prepareSetTitle(kind: "issue" | "pull", id: string, title: string): Promise<IssueEditActionData>;
   prepareChangeState(kind: "issue" | "pull", id: string, state: "open" | "closed")
     : Promise<IssueEditActionData>;
+  startSession(queue: unknown): Promise<unknown>;
 } & Record<ListingMethod, (query: never, pageSize: number) => Promise<Cursor<unknown>>>;
 
 async function drain<T>(cursor: { next(): Promise<T[] | null> }): Promise<T[]> {
@@ -317,6 +321,19 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   ): Promise<Outcome<void>> {
     return await outcome(() =>
       this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
+  }
+
+  /** Submits a hand-built `action` record, as a session does once it has prepared one. */
+  async submitAction(
+    facetName: string, props: GatekeeperProps,
+    queue: unknown, action: GitHubActionData, description: ActionDescription,
+  ): Promise<Outcome<void>> {
+    return await outcome(() =>
+      this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
+  }
+
+  async autoApprovableActions(facetName: string, props: GatekeeperProps): Promise<Outcome<ActionKind[]>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).getAutoApprovableActions());
   }
 
   async rejectAction(
@@ -495,6 +512,33 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
         }
       }
       return pages;
+    });
+  }
+
+  /**
+   * Opens the binding's session over `queue`, as executeCode would, and makes a chain of calls,
+   * each on the previous call's result (a pull request it opened, a check run, ...). With `drain`,
+   * the last result is a cursor, drained here (cursor stubs cannot ride back).
+   */
+  async sessionRead(
+    facetName: string, props: GatekeeperProps, queue: unknown, calls: SessionCall[], drainLast = false,
+  ): Promise<Outcome<unknown>> {
+    return await outcome(async () => {
+      type Stub = Record<string, (...args: unknown[]) => Promise<unknown>> & Partial<Disposable>;
+      const opened: Stub[] = [];
+      try {
+        let result = await this.#gatekeeper(facetName, props).startSession(queue);
+        for (const call of calls) {
+          const target = result as Stub;
+          opened.push(target);
+          result = await target[call.method](...(call.args ?? []));
+        }
+        if (!drainLast) return result;
+        opened.push(result as Stub);
+        return await drain(result as Cursor<unknown>);
+      } finally {
+        for (const stub of opened) stub[Symbol.dispose]?.();
+      }
     });
   }
 

@@ -35,6 +35,9 @@ const CHAT_MESSAGE_CREATED = "google.workspace.chat.message.v1.created";
  */
 function configure(config: WorkerConfig): void {
   delete config.build;
+  // Workers AI has no local simulator, so wrangler would open a remote session that needs Cloudflare
+  // credentials; run-dev-server.ts drops it the same way, and nothing here reads a PDF.
+  delete config.ai;
   config.vars = {
     ...config.vars, BASE_URL: GOOGLE_BASE_URL, CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret",
     PUBSUB_TOPIC, PUBSUB_CHAT_TOPIC: PUBSUB_TOPIC, PUBSUB_GMAIL_TOPIC: PUBSUB_TOPIC,
@@ -77,7 +80,9 @@ export async function upgradeGoogle(harness: Harness): Promise<void> {
   google.main = main;
   // update() resolves at the first reload, but each Worker rebuilds and reloads on its own, so
   // that reload can still be running either one's earlier build, with another to come. Every
-  // Worker carries this upgrade's mark, and it is done once each reports it.
+  // Worker carries this upgrade's mark, and it is done once each reports it. Reading the env asks
+  // the runtime again after each reload, so a read that meets a later reload loses its
+  // connection: that Worker has not reported yet.
   const upgrade = randomUUID();
   const workers: string[] = [];
   await harness.server.update(current => ({
@@ -91,10 +96,24 @@ export async function upgradeGoogle(harness: Harness): Promise<void> {
   }));
   await waitFor("every Worker to run the upgrade", async () => {
     for (const name of workers) {
-      if ((await harness.server.getWorker(name).getEnv()).TEST_UPGRADE !== upgrade) return null;
+      try {
+        if ((await harness.server.getWorker(name).getEnv()).TEST_UPGRADE !== upgrade) return null;
+      } catch (error) {
+        if (isReloadDisconnect(error)) return null;
+        throw error;
+      }
     }
     return true;
   });
+}
+
+/**
+ * Miniflare reads the env with a synchronous fetch on a worker thread and rethrows its failure
+ * here, which drops the cause's `code`, so the cause is matched by its message.
+ */
+function isReloadDisconnect(error: unknown): boolean {
+  return error instanceof TypeError && error.message === "fetch failed" &&
+    error.cause instanceof Error && /\bECONN(RESET|REFUSED)\b/.test(error.cause.message);
 }
 
 type Row = Record<string, unknown>;

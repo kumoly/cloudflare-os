@@ -5,7 +5,7 @@ import deployed from "./cloudflare.config.ts";
 
 const { compatibilityDate, compatibilityFlags } = deployed.worker;
 
-/** Workerd coverage for Google resource configurators and the Gmail and Chat Durable Objects. */
+/** Workerd coverage for Google resource configurators and the Gmail, Chat, Calendar and BigQuery Durable Objects. */
 export default defineConfig({
   plugins: [
     capnwebValidate(),
@@ -20,9 +20,11 @@ export default defineConfig({
           PUBSUB_PUSH_SERVICE_ACCOUNT: "push@test.iam.gserviceaccount.com",
         },
         durableObjects: {
+          BigQueryGatekeeperImpl: {className: "BigQueryGatekeeperImpl", useSQLite: true},
           ChatHookDriver: {className: "ChatHookDriver", useSQLite: true},
           GmailGatekeeperImpl: {className: "GmailGatekeeperImpl", useSQLite: true},
           GmailHookDriver: {className: "GmailHookDriver", useSQLite: true},
+          GoogleCalendarGatekeeperImpl: {className: "GoogleCalendarGatekeeperImpl", useSQLite: true},
           GoogleChatGatekeeperImpl: {className: "GoogleChatGatekeeperImpl", useSQLite: true},
           TestHooks: {className: "TestHooks", useSQLite: true},
           UserAccount: {className: "UserAccount", useSQLite: true},
@@ -33,6 +35,8 @@ export default defineConfig({
   test: {
     testTimeout: 15_000,
     include: [
+      "__tests__/workerd/bigquery-observers.test.ts",
+      "__tests__/workerd/calendar-observers.test.ts",
       "__tests__/workerd/chat-actions.test.ts",
       "__tests__/workerd/chat-hooks.test.ts",
       "__tests__/workerd/configurators.test.ts",

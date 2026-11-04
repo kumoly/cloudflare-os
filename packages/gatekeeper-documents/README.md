@@ -41,6 +41,10 @@ same source. The types shown to an agent cannot drift from the implementation's 
   returns PNG bytes. Artifacts cannot be read through another job or workspace.
 - `cancel(id)` cancels scoped temporary computation; `retry(id)` creates a fresh attempt from
   retained terminal-job input. Neither modifies the original PDF.
+- `release(id)` frees one terminal job's retained input, results and images. First save every
+  result page and any needed images; released jobs cannot be read or retried. This requires the
+  runner's `release` capability and never deletes the caller's saved source file. Cancelled
+  jobs also need release. Retained terminal jobs count toward the runner's capacity.
 
 Lifecycle states are `queued`, `running`, `succeeded`, `failed`, and `cancelled`. Errors expose stable
 codes or generic transport failures; native stderr, secret headers, local paths, and document bodies
@@ -65,6 +69,9 @@ A parsed page exposes optional `widthPoints`/`heightPoints`, `blocks`, `tables`,
 
 - Each block has an `id`, zero-based reading `order`, native `type`, `text`, optional `bbox`, and
   optional `tableId` referencing a table on the same page.
+- Native `table_caption` and `table_footnote` children are preserved as separate text blocks
+  with their own geometry and their parent's reading order. They carry no asserted `tableId`:
+  parser parentage alone does not establish a reliable caption-to-table relationship.
 - Each table has an `id`, reading `order`, optional native `bbox`, logical `sourceLocator`,
   `continuesPrevious` hint, `rowCount`, `columnCount`, and `cells`.
 - Each cell preserves zero-based `row`/`col`, positive `rowSpan`/`colSpan`, and complete `text`,

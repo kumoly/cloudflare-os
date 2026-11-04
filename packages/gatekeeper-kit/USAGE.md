@@ -538,6 +538,19 @@ provider request the entry exists to cache. A disconnected account propagates it
 source that cannot vouch for the credentials bypasses the cache. Compose an authority on the raw
 constructor only where it is genuinely local.
 
+Use `cachedMany` when the provider answers many keys in one request. Fresh entries are served,
+keys another caller is already loading are joined, and the rest reach the loader together; each key
+is then stored and fenced as `cached` stores it, so a later batch of a different shape reuses them.
+Pass the provider's per-request limit as `batchSize` rather than splitting keys inside the loader:
+the cache cuts batches from the missing keys alone, loads them one at a time and stores each as it
+returns, so a failing request keeps what the requests before it learned. A loader that throws
+stores nothing. Use `cached` for a key answered by a request of its own.
+
+Either method takes its TTL as a function of the cached value instead of a number when some answers
+deserve trust for longer than others, such as an access check that keeps a grant longer than a
+denial. It is asked each time an entry is consulted, so changing it applies to entries already
+stored.
+
 ## Actions and files
 
 Use `defineActions` and `stageAction` for externally visible side effects. They own the
@@ -555,12 +568,16 @@ second attempt is safe. `ActionApplyError` is terminal and asserts the provider 
 absent** — it retires the dependents waiting on references this action was to provide.
 `ActionOutcomeUnknownError` is terminal and asserts nothing: use it for a timeout, an aborted
 request, or any failure after the provider was reached. That record is never replayed and never
-pruned, strands no dependent, and holds a slot until the user rejects it, so the "check the
-provider" warning survives.
+pruned, and holds a slot until the user rejects it, so the "check the provider" warning survives.
+It strands no dependent until then; rejecting it retires those whose references it never bound.
 
 `claimBeforeApply` produces that same unknown outcome when an activation dies mid-dispatch. Neither
 substitutes for a provider idempotency key derived from the stable `ActionContext.id`, which is
 what makes a retry safe in the first place.
+
+Rejecting always withdraws the action, whatever its outcome at the provider: the gatekeeper stops
+tracking it, and an effect that already landed stays. So a `reject` hook is cleanup only and must
+not refuse because the outcome is uncertain; one that throws is logged and the record removed anyway.
 
 `submit` refuses a payload whose `dependsOn` names a reference that is neither resolved nor
 provided by a pending or claimed action: once its provider was rejected or failed, every apply
@@ -689,7 +706,8 @@ that disclosure with a synthetic collection ID instead.
 
 ### Scope describes the disclosure
 
-`ObservationScope` describes what a read reveals: `baseline`, `collections`, or `withholdFromObservers`.
+`ObservationScope` describes what a read reveals: `baseline`, `collections`, `withholdFromObservers`,
+or `subresources` (see [Subresources the Workshop checks](#subresources-the-workshop-checks)).
 
 A **collection** is a provider-side access-controlled grouping — a Confluence space, a Jira project, a
 GitHub repo — whose ACL governs the items the read returned. Pass the ids of those groupings, not
@@ -710,6 +728,49 @@ collection ids would name a check nothing performs, so declare those reads `{ ki
 the provider can revoke child access independently, that is the wrong strategy, not the wrong
 scope. A custom strategy declares its own `aclChecks`, and only the `per-read` arm may carry
 `prepare`, so claiming a check it does not implement will not compile.
+
+### Subresources the Workshop checks
+
+A `{ kind: "subresources", ids }` scope reports the read's access dependencies as
+`ObservationDescription.subresources`, and the Workshop checks them in place of the strategy. It
+asks the gatekeeper's `verifyObserverAccess()` about every collaborator who can see the chat or
+gadget that made the read, refuses the read if any is denied, and checks the recorded ids again at
+each collaborator's admission. The gate prepares, excludes and fences nothing for such a read, so it
+adds nothing to the binding's tracked collections. The scope is chosen per read, so a binding
+converts one read path at a time:
+
+1. Name every dependency the read has, in canonical spelling, not only those new to the binding:
+   the Workshop records them per chat or gadget, so a repeat in another context is a new
+   requirement there. Pass `[]` for a read the admission baseline alone restricts. Unlike
+   `collections`, an empty list is accepted, so a cursor page that disclosed nothing needs no
+   separate branch unless its absence is itself restricted.
+2. Implement `verifyObserverAccess()` on the binding's Durable Object with `observerAccessVerifier`,
+   over the oracle the binding already gives `trackedCollectionObservers`:
+
+   ```ts
+   const access = {
+     hasCollectionAccess: (verifier: MyVerifierApi, ids: readonly string[]) => verifier.canAccess(ids),
+   };
+
+   #observers = trackedCollectionObservers({ kv: this.ctx.storage.kv, ...access });
+   #verify = observerAccessVerifier(access);
+
+   async verifyObserverAccess(
+     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+     subresources: string[],
+   ) {
+     return this.#verify(observers, subresources);
+   }
+   ```
+
+   It judges each observer by the verifier that call brings and caches nothing. Make the oracle
+   throw when it cannot tell — expired credentials, a provider outage: the tracker excludes one
+   observer whose oracle throws, but here the throw fails the call, as the Workshop expects, while
+   `false` would deny without saying why.
+3. Keep the strategy. Its `addObserver()` still enforces the admission baseline, everything
+   recorded before a path converted, and every read still on another scope. An owner-only read stays
+   on `withholdFromObservers` until the binding reports an id its oracle grants only to the owner:
+   `[]` would share it with every admitted collaborator.
 
 ### A cursor authorizes everything it hands out
 
@@ -819,6 +880,29 @@ kernel change marks them, every failure takes the fail-closed unknown-outcome pa
 `abandon` latches the binding unshareable for good, so a refused owner-only read costs the
 workspace its sharing until the kernel distinguishes the two.
 
+### Subresource IDs name resources
+
+Build every `ObservationDescription.subresources` ID with `formatSubresourceId()` from
+`./subresource-ids`, and read them back in `verifyObserverAccess()` with `parseSubresourceId()`:
+
+```ts
+formatSubresourceId({ namespace: "drive", fragments: [{ name: "file", id: fileId }] });
+// "drive/file/<escaped fileId>"
+```
+
+Each fragment names a resource: a kind and the provider's id for it. It never names a predicate or
+a policy. A mailbox no collaborator may see is still `gmail/inbox/<address>`, not a `private`
+marker; the verifier knows what access each kind of resource requires, including that one is never
+shared. Set `namespace` only when the gatekeeper exposes distinct product families with their own
+resources, as Google does with Gmail, Drive and BigQuery. A single-product gatekeeper omits it
+instead of repeating its own name.
+
+`parseSubresourceId()` accepts only the exact spelling `formatSubresourceId()` produces, so one
+resource always reports one string. That string is what the Workshop deduplicates and indexes. The
+Workshop refuses IDs over 512 UTF-16 code units, and escaping can lengthen a component up to ninefold
+(a three-byte UTF-8 character becomes nine), so a resource whose provider id approaches that limit
+needs a shorter identity.
+
 ## Bounds
 
 Every cap must be a positive safe integer. Constructors reject zero, fractional, and unsafe values
@@ -835,6 +919,8 @@ The kit supplies defaults where they apply across consumers:
 | cursor `maxProviderPagesPerCall` | 10 |
 | `OAuthClient` `timeoutMs` | 30 000 ms |
 | `OAuthClient` `maxResponseBytes` | 64 KiB |
+| `readCiLog` `retainBytes` / `maxBytes` | 8 MiB / 128 MiB |
+| `CiLogCache` `ttlMs` / `maxTotalBytes` | 1 hour / 32 MiB |
 
 The kit requires values where no general default is safe:
 
@@ -920,6 +1006,12 @@ shallow-info.
   so an oversized HTML error page still yields its first bytes. Never redact its result: the cut can
   split an echoed secret. Read a body that may echo a credential whole with `readTextCapped` and
   redact before cutting. Use `readTextCapped` whenever the whole body must be read, JSON included.
+- Read CI job logs with `readCiLog`, not `readTextCapped`: a long log is legitimately larger than
+  any whole-body cap, and `readCiLog` streams it, keeps only the tail, and still counts every
+  line, so `pageCiLog` numbers lines over the whole log. Pass agent-supplied page options to
+  `pageCiLog` untouched; it validates them. Put only finished logs in `CiLogCache`, and revalidate
+  a hit against the provider (log erased, job deleted, access lost) before serving it — the cache
+  holds bytes, not authority.
 - Use `normalizeVendorEndpoint` for user-supplied provider base URLs. It validates that one URL and
   is not a fetch policy: fetch with `redirect: "manual"`, or re-validate each `Location` and drop
   origin-scoped headers when the origin changes, or a redirect carries `Authorization` off the

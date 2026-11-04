@@ -9,7 +9,8 @@
 
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import {
-  DEFAULT_BANNER_COLOR,
+  DEFAULT_BANNER_COLOR, DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
+  DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
   type AiModelProvider, type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput,
   type BlueprintPublicInfo, type GatewayModel, type GatewayModelMode, type GatewayModelSettings,
   type ReasoningLevel,
@@ -53,6 +54,13 @@ export type AdminConfig = {
    * vendors that declare autoProvisionsAccount.
    */
   ambientGatekeeperModes: Record<string, AmbientGatekeeperMode>;
+  /**
+   * The hosts `webFetch` may reach in a workspace that has observed restricted data (see
+   * Overseer.getWebFetchEnv), as lowercase ASCII host names. Empty ⇒ no web fetches there. A host
+   * belongs here only if everyone who can see requests to it is cleared for that data: its logs,
+   * analytics and caches, and anything it fetches on a request's behalf.
+   */
+  restrictedWebFetchHosts: string[];
 
   /**
    * The blueprints offered as this deployment's standard output formats. What a user gets from
@@ -102,6 +110,17 @@ export type AdminConfig = {
    * false). The admin's browser reads it and fetches the suggestions; the server only stores it.
    */
   modelsDevSuggestions: boolean;
+  /**
+   * Whether the deployment checks for a newer release by itself (default true). Only meaningful
+   * for a deployment the deploy flow installed (see deployment-updates.ts).
+   */
+  updateChecksEnabled: boolean;
+  /** How many minutes a successful update check is relied on before the deployment asks again. */
+  updateCheckIntervalMinutes: number;
+  /** How many hours a newer release must have been available before admins are notified of it. */
+  updateMinimumAgeHours: number;
+  /** How many hours a dismissed update notice stays hidden in the browser that dismissed it. */
+  updateNoticeSnoozeHours: number;
 };
 
 /**
@@ -139,6 +158,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   disabledResources: {},
   disabledGatekeepers: [],
   ambientGatekeeperModes: {},
+  restrictedWebFetchHosts: [],
   formats: [],
   modelModes: {},
   addedProviders: [],
@@ -147,6 +167,21 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   defaultReasoning: null,
   userModelsEnabled: true,
   modelsDevSuggestions: false,
+  updateChecksEnabled: true,
+  updateCheckIntervalMinutes: DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
+  updateMinimumAgeHours: DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
+  updateNoticeSnoozeHours: DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
+};
+
+/**
+ * The last update check (see deployment-updates.ts), made for the running release `from`. Times
+ * are epoch milliseconds. `checkedAt` and `result` are those of the last check that succeeded.
+ */
+export type UpdateCheck = {
+  from: string;
+  attemptedAt: number;
+  checkedAt?: number;
+  result?: { latestReleaseId: string; upgradeAvailable: boolean; availableSince?: number };
 };
 
 export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
@@ -173,6 +208,14 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
       // exactly once per blueprint: an admin who then removes a format keeps it removed, while a
       // deployment that installed before curation existed still gets promoted.
       promotedFormatBlueprints: <string[]>[],
+
+      // The last check for a newer release, or null before the first. Only a deployment the
+      // deploy flow installed makes one.
+      updateCheck: <UpdateCheck | null>null,
+
+      // The version tag the router last reported (see ROUTER_VERSION_HEADER), "" for none, or null
+      // before any report. A label for admins only: any request could have carried it.
+      routerVersionTag: <string | null>null,
     },
   });
 }

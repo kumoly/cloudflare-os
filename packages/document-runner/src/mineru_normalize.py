@@ -184,6 +184,16 @@ def normalize(middle, selected):
                 if not isinstance(content, list) or len(content) > 1000:
                     raise NormalizationError("PARSER_LIMIT")
                 for body_index, body in enumerate(content):
+                    if body.get("type") in ("table_caption", "table_footnote"):
+                        caption = {"id": f"p{page_number}-b{order}-c{body_index}",
+                                   "order": order, "type": body["type"],
+                                   "text": natural_text(body.get("content", ""))}
+                        caption_box = native_box(body.get("bbox"))
+                        if caption_box is not None:
+                            caption["bbox"] = caption_box
+                        # Native caption parentage can cross columns; preserve it as
+                        # an independent block rather than asserting a table link.
+                        result["blocks"].append(caption)
                     if body.get("type") != "table_body":
                         continue
                     raw = bounded_text(body.get("content"), 8 * 1024 * 1024)
@@ -206,6 +216,8 @@ def normalize(middle, selected):
                     result["tables"].append(table)
                     normalized.setdefault("tableId", identifier)
             result["blocks"].append(normalized)
+            if len(result["blocks"]) > 1000:
+                raise NormalizationError("PARSER_LIMIT")
         if not any(b["text"].strip() for b in result["blocks"]) and not any(
             c["text"].strip() for table in result["tables"] for c in table["cells"]
         ):

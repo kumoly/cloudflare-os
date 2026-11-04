@@ -114,4 +114,7 @@ export interface DocumentSession {
   cancel(id: string): Promise<DocumentJob>;
   /** Start a fresh attempt using a retained failed/cancelled job's input. */
   retry(id: string): Promise<DocumentJob>;
+  /** Release a terminal job's retained input, results and images after saving what is needed.
+   * Running/queued jobs must first finish or be cancelled. Released jobs cannot be retried. */
+  release(id: string): Promise<void>;
 }
