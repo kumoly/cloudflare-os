@@ -139,7 +139,7 @@ describe("choosing", () => {
     await picker.tab("Spaces").click();
     await picker.option("My first space").click();
     await poll(picker.location).toBe("Spaces My first space");
-    expect(await picker.titles()).toEqual([
+    await poll(picker.titles).toEqual([
       "All of My first space", "My first space", "Blog", "Engineering", "Onboarding", "Q4 planning",
       "Retro board", "Launch tracker", "Archive",
     ]);
