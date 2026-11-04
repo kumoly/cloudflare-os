@@ -288,3 +288,22 @@ other manually published text too; Git hooks protect Git objects, not every
 GitHub web edit. Historical identity cleanup was explicitly authorized; it is
 a one-time rewrite, not a relaxation of the normal no-force-push rule. GitHub
 cached objects and old PR refs need separate support handling.
+
+## External OpenClaw client compatibility
+
+`pnpm --filter @gadgets/integration-tests test:client-compat` runs the frozen released
+OpenClaw client against the candidate Workshop and an actual pinned-backend upgrade
+that preserves the original token, workspace and Gadget IDs. CI includes this job in
+the required `Build and test` result; a skipped or failed client check cannot pass it.
+The fixture's provenance and pinned dependencies are independent of candidate source.
+Do not advance the client baseline to hide an API regression. Rename public methods
+with a compatibility window or coordinate an explicit client/server migration.
+
+The local updater now requires `config/client-acceptance.json` in the host service.
+Its command must run the kumoly-os installed-artifact/Gateway acceptance runner. The
+host adapter installs this configuration; it contains no credentials. Missing gates
+or failed native-tool results block acceptance. A candidate receipt is passed through
+`CFOS_ACCEPTANCE_RECEIPT` so evidence refers to the candidate, not the prior deployment.
+For full upgrades use the host `upgrade-with-client-acceptance cfos -- COMMAND` wrapper
+around the existing backed-up upgrade procedure. Never run older binaries against
+migrated state as an automatic recovery step.

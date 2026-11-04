@@ -1,0 +1,400 @@
+{
+  "schemaVersion": 1,
+  "version": "2",
+  "description": "Genju 的 Weather Blueprint v2：Issaquah 天气及中英日三语问候。",
+  "operations": {
+    "snapshot": {
+      "method": "getSnapshot",
+      "description": "读取最后成功的天气快照；不会触发刷新。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "argumentOrder": [],
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "cityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "timeZone": {
+            "const": "America/Los_Angeles",
+            "type": "string"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "cityId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "timeZone": {
+                    "const": "America/Los_Angeles",
+                    "type": "string"
+                  },
+                  "fetchedAt": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+                  },
+                  "localTime": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d$"
+                  },
+                  "forecastDate": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d\\d-\\d\\d$"
+                  },
+                  "temperatureC": {
+                    "type": "number",
+                    "minimum": -100,
+                    "maximum": 70
+                  },
+                  "apparentTemperatureC": {
+                    "type": "number",
+                    "minimum": -100,
+                    "maximum": 70
+                  },
+                  "humidityPercent": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "windSpeedKph": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 400
+                  },
+                  "precipitationMm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2000
+                  },
+                  "weatherCode": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 99
+                  },
+                  "isDay": {
+                    "type": "boolean"
+                  },
+                  "highC": {
+                    "type": "number",
+                    "minimum": -100,
+                    "maximum": 70
+                  },
+                  "lowC": {
+                    "type": "number",
+                    "minimum": -100,
+                    "maximum": 70
+                  },
+                  "precipitationChance": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "cityId",
+                  "timeZone",
+                  "fetchedAt",
+                  "localTime",
+                  "forecastDate",
+                  "temperatureC",
+                  "apparentTemperatureC",
+                  "humidityPercent",
+                  "windSpeedKph",
+                  "precipitationMm",
+                  "weatherCode",
+                  "isDay",
+                  "highC",
+                  "lowC",
+                  "precipitationChance"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastAttemptAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastError": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "network",
+                  "http",
+                  "invalid_response"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "cityId",
+          "timeZone",
+          "latest",
+          "lastAttemptAt",
+          "lastError"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "timeoutMs": 15000
+    },
+    "refresh": {
+      "method": "refreshWeather",
+      "description": "从已有 WEATHER_SOURCE 更新天气缓存，并返回最新状态。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "argumentOrder": [],
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "cityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "timeZone": {
+            "const": "America/Los_Angeles",
+            "type": "string"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "cityId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "timeZone": {
+                    "const": "America/Los_Angeles",
+                    "type": "string"
+                  },
+                  "fetchedAt": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+                  },
+                  "localTime": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d$"
+                  },
+                  "forecastDate": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d\\d-\\d\\d$"
+                  },
+                  "temperatureC": {
+                    "type": "number",
+                    "minimum": -100,
+                    "maximum": 70
+                  },
+                  "apparentTemperatureC": {
+                    "type": "number",
+                    "minimum": -100,
+                    "maximum": 70
+                  },
+                  "humidityPercent": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "windSpeedKph": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 400
+                  },
+                  "precipitationMm": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2000
+                  },
+                  "weatherCode": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 99
+                  },
+                  "isDay": {
+                    "type": "boolean"
+                  },
+                  "highC": {
+                    "type": "number",
+                    "minimum": -100,
+                    "maximum": 70
+                  },
+                  "lowC": {
+                    "type": "number",
+                    "minimum": -100,
+                    "maximum": 70
+                  },
+                  "precipitationChance": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "cityId",
+                  "timeZone",
+                  "fetchedAt",
+                  "localTime",
+                  "forecastDate",
+                  "temperatureC",
+                  "apparentTemperatureC",
+                  "humidityPercent",
+                  "windSpeedKph",
+                  "precipitationMm",
+                  "weatherCode",
+                  "isDay",
+                  "highC",
+                  "lowC",
+                  "precipitationChance"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastAttemptAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastError": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "network",
+                  "http",
+                  "invalid_response"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "cityId",
+          "timeZone",
+          "latest",
+          "lastAttemptAt",
+          "lastError"
+        ],
+        "additionalProperties": false
+      },
+      "effect": "write",
+      "timeoutMs": 45000
+    },
+    "greetings": {
+      "method": "getDailyGreetings",
+      "description": "生成或读取 Issaquah 当地时段的中英日问候；可能刷新天气、调用 LLM 并写入缓存。greetings=null 表示生成失败。",
+      "effect": "write",
+      "timeoutMs": 120000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "argumentOrder": [],
+      "checkStateFields": {},
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d\\d-\\d\\d$"
+          },
+          "period": {
+            "type": "string",
+            "enum": [
+              "morning",
+              "afternoon",
+              "evening"
+            ]
+          },
+          "greetings": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "zh": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 220,
+                    "pattern": "^[^\\r\\n\\x00-\\x1f]+$"
+                  },
+                  "en": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 220,
+                    "pattern": "^[^\\r\\n\\x00-\\x1f]+$"
+                  },
+                  "ja": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 220,
+                    "pattern": "^[^\\r\\n\\x00-\\x1f]+$"
+                  }
+                },
+                "required": [
+                  "zh",
+                  "en",
+                  "ja"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "date",
+          "period",
+          "greetings"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}
