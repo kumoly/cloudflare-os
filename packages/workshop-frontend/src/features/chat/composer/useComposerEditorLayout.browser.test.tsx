@@ -43,10 +43,12 @@ const Editor = ({ text }: { text: string }) => {
 describe("composer editor layout", () => {
   let container: HTMLDivElement | undefined;
   let root: Root | undefined;
+  let scrollbarStyle: HTMLStyleElement | undefined;
 
   afterEach(async () => {
     await act(async () => root?.unmount());
     container?.remove();
+    scrollbarStyle?.remove();
   });
 
   const render = async (text: string) => {
@@ -73,6 +75,9 @@ describe("composer editor layout", () => {
   });
 
   it("leaves out the scrollbar the textarea gains when it scrolls", async () => {
+    // macOS defaults to zero-width overlay scrollbars; exercise a layout-consuming scrollbar.
+    scrollbarStyle = document.head.appendChild(document.createElement("style"));
+    scrollbarStyle.textContent = "textarea::-webkit-scrollbar { width: 16px; }";
     const { textarea, mirror } = await render(LONG_TEXT);
     const scrollbarWidth = textarea.offsetWidth - textarea.clientWidth;
 
