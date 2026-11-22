@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, readlinkSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
-import { changeMode, planChanges, replaceEntry, runtimeEntry } from './cfos-local.mjs';
+import { resolve, join } from 'node:path';
+import { changeMode, planChanges, replaceEntry, runtimeEntry, verifyInstalledClient } from './cfos-local.mjs';
 
 function fixture(t) {
   const app = mkdtempSync(resolve(tmpdir(), 'cfos-loop-test-'));
@@ -79,4 +79,17 @@ test('path policy uses hot reload, assets or restart and escalates structural ch
   assert.equal(changeMode(['pnpm-lock.yaml']), 'full-update');
   assert.equal(changeMode(['packages/gatekeeper-documents/package.json']), 'full-update');
   assert.equal(changeMode(['packages/workshop-backend/src/migrations/next.ts']), 'full-update');
+});
+
+test('installed-client acceptance fails closed and forwards the candidate receipt', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cfos-gate-'));
+  try {
+    mkdirSync(join(root, 'config'));
+    assert.throws(() => verifyInstalledClient(root, root, '/candidate'), /ENOENT/);
+    const config = join(root, 'config/client-acceptance.json');
+    writeFileSync(config, JSON.stringify({ command: [process.execPath, '-e', 'process.exit(1)'] }));
+    assert.throws(() => verifyInstalledClient(root, root, '/candidate'), /acceptance failed/);
+    writeFileSync(config, JSON.stringify({ command: [process.execPath, '-e', "process.exit(process.env.CFOS_ACCEPTANCE_RECEIPT === '/candidate' ? 0 : 1)"] }));
+    verifyInstalledClient(root, root, '/candidate');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -88,6 +88,8 @@ export default defineConfig({
       'unicorn/consistent-function-scoping': 'warn',
     },
     ignorePatterns: [
+      // Byte-for-byte released external client; integrity is checked by the compatibility builder.
+      'packages/integration-tests/fixtures/openclaw-client/core.mjs',
       '**/dist/**',
       '**/generated/**',
       // Bundled blueprint files are user-authored gadget source extracted verbatim for review. They

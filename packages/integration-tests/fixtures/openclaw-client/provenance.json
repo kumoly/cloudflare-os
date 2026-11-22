@@ -1,0 +1,9 @@
+{
+  "version": "0.2.1",
+  "sourceCommit": "1704e064fcade31771ac49f17a2f838191454764",
+  "artifactSha256": "2fbca47ecedb4389c925c7d6a994e3ed3d568b95fb35ac45a1627957e3fcae3f",
+  "filesSha256": {
+    "core.mjs": "94d6d8592fde209fd7e30e1ee8ee4155f733fde945fd34f89d0a6d596373aeac",
+    "contracts/weather.json": "e2efabac3228b0740a30733216a91dc4048db18a3b5869fb20b09e95e14b3edf"
+  }
+}
