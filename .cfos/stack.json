@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "upstream": "cloudflare/cloudflare-os",
   "fork": "kumoly/cloudflare-os",
-  "upstreamBase": "a3ba4746b58f1ef8e2252f8bac6b6377099202f0",
+  "upstreamBase": "27888f048a4278cce3a71c462924a5435dab614d",
   "integrationBranch": "cfos/main",
   "compatibilityCommits": [
     {

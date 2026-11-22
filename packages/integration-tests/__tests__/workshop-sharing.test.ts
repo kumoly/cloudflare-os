@@ -76,7 +76,7 @@ const headOf = (workpieces: WorkpieceRecorder, gadgetId: WorkpieceId, after?: st
 const ui = (gadgetId: WorkpieceId, text?: string): CodeContent =>
   new Map([[gadgetId, new Map(text === undefined ? [] : [["client.js", text]])]]);
 
-const MAINLINE_UI = "export default 'mainline';\n";
+const MAINLINE_UI = "document.title = 'mainline';\n";
 const USE_ONLY = "Unauthorized: this collaborator only has permission to use the gadget's UI.";
 
 const affectedAccess = (affected: AffectedCollaborator[]) => affected
@@ -277,7 +277,11 @@ it.concurrent("revoking one gadget removes only it from the collaborator's Outpu
         return {
           role: (await reopenedWorkspace.getMetadata()).role,
           revoked: await reopenedWorkspace.getGadget(defaultGadgetId)
-              .then(() => null, (error: unknown) => (error as Error).message),
+              .then(() => null, (error: unknown) => {
+                // A socket lost during restart isn't the access decision; reconnect and retry.
+                if (!(error instanceof Error) || error.message !== `No such gadget: ${defaultGadgetId}`) throw error;
+                return error.message;
+              }),
         };
       });
     } catch {
