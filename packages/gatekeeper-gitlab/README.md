@@ -19,11 +19,12 @@ own terms. See `plans/gitlab-gatekeeper.md` for the design record.
 
 `gitPull(oids, options)` returns a `GitPullTransfer`: a one-shot raw PACK stream and a separate
 terminal status. Lazy DO reads consume it through the bounded object cache. The same capability
-supports native Git hydration, but does not enable it here: the container consumer ships in a
-separate kernel worktree-replica bootstrap change. That consumer must bind the bootstrap to an
-authorized immutable commit, request its complete tree at depth one, and import the pack without
-populating the DO cache. `gitPull` is kernel-facing, not a gadget-facing arbitrary Git proxy;
-the kernel selects objects from recorded provenance, not a provider-side advertisement validator.
+also serves native Git in a container that mounted a worktree: the container clones through
+`WorktreeReplicator.gitPull()`, and the kernel asks this gatekeeper for the history and files it
+doesn't store, streaming them through without storing the files (see
+[`docs/worktree-replicas.md`](../../docs/worktree-replicas.md#git-transport)). `gitPull` is
+kernel-facing, not a gadget-facing arbitrary Git proxy; the kernel selects objects from recorded
+provenance, not a provider-side advertisement validator.
 No encoded Git commands, ref discovery, or arbitrary clone URLs cross this interface. OAuth and
 optional Cloudflare Access credentials remain in the gatekeeper's transport, including on
 self-hosted instances.
@@ -31,12 +32,27 @@ self-hosted instances.
 ## Auto-approval
 
 As in the GitHub gatekeeper, every queued action carries a stable kind (`gitlab.<action>`), and
-every one may be auto-approved once the user opts in to its kind, including closing and reopening,
-resolving and reopening diff threads, `requestChanges` reviews and force pushes (under their own
-`gitlab.forcePush` kind). **Merging a merge request** and **an approving review** always wait for
-a person: an approval shares the `gitlab.postReview` kind with the other reviews but is never
-auto-approvable. Each binding advertises through `getAutoApprovableActions()` only the eligible
-kinds its session can submit.
+most may be auto-approved once the user opts in to their kind, including closing and reopening,
+resolving and reopening diff threads, `requestChanges` reviews, and pushes and force pushes to
+other branches. A force push has its own kind (`gitlab.forcePush`), so enabling ordinary pushes
+does not let history be rewritten. These always wait for a person, because they pass a gate:
+
+- **merging a merge request**;
+- **an approving review**, which shares the `gitlab.postReview` kind with the other reviews;
+- **a push or force push to the default or a protected branch**, which shares the `gitlab.push` or
+  `gitlab.forcePush` kind with pushes to other branches. For a branch the push creates, the gatekeeper reads the project's protected-branch rules,
+  wildcards included. A push into an empty repository creates its default branch, so it waits too,
+  and so does any push whose protection could not be read, except that if GitLab denies the account
+  access to the rules (listing them takes Maintainer), no rule counts as covering the branch. An
+  auto-approvable push is checked again when it applies; if its protection cannot be read then, the
+  apply asks for a retry.
+
+An issue or merge request created with a bot or service account among its assignees waits too,
+under the same `gitlab.createIssue` or `gitlab.createMergeRequest` kind as other creates, because
+the assignment can start an agent run (a GitLab Duo flow) that spends the namespace's credits.
+
+Each binding advertises through `getAutoApprovableActions()` only the kinds its session can submit
+that may be auto-approved, so `gitlab.mergeMergeRequest` never appears.
 
 ## CI status
 
@@ -76,25 +92,80 @@ the pipeline succeeds, stay in GitLab. `api` already covers every read, so no ne
   first, so an erased log is never served, and a cached log is served only while the connected
   account still holds Developer on the project; otherwise the log is read from GitLab, which
   decides.
-- **Sharing.** Once a binding has read a job log or a test report, a collaborator needs the
-  **Developer** role on the project, not Reporter, to observe the workspace. A job run with
-  `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, and GitLab shows such
-  logs only to Developers and above
-  ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)); a failed test's
-  recorded output comes from the job that ran it, so test reports count too. A test report needs
-  **Maintainer** instead unless the connected account is a project member below Maintainer and
-  not an instance administrator: a job can restrict its reports to Maintainers
-  ([`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess)), and GitLab includes
-  those for a Maintainer and for an administrator, whatever its membership. Collaborators already observing are checked again at that role on each
-  of those reads, and left out of them if they fall short. A connection made before this version
-  did not record its collaborators, so
-  those reads cannot leave out one admitted then: on it, job logs and test reports are refused
-  (every other CI read works) until the GitLab connection is removed and added again.
+- **Sharing.** A collaborator who is a project member (Reporter or above) can observe a job log or
+  a test report the workspace read unless GitLab would withhold that job's data from them: a job
+  run with `CI_DEBUG_TRACE` writes every CI/CD variable, masked or not, into its log, which GitLab
+  shows only to Developers and above
+  ([docs](https://docs.gitlab.com/ci/variables/variables_troubleshooting/)), and a job can restrict
+  its artifacts, test reports included, to Developers or Maintainers
+  ([`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess)). Neither setting is
+  visible to the connected account, so each read names its jobs and the collaborator's own account
+  asks GitLab. See [Sharing with collaborators](#sharing-with-collaborators).
 
 Status values GitLab adds after this gatekeeper was written read as `unknown` with phase
 `blocked`, and are logged as `ci.unknown_status`. GitLab 19.2 renamed the trigger-jobs listing
 (`…/bridges` → `…/trigger_jobs`); the gatekeeper picks the route from the instance's version.
 This gatekeeper registers no GitLab webhooks, so agents poll.
+
+## Sharing with collaborators
+
+A binding is one project (or one of its issues or merge requests, which share its permissions),
+and the policy for a collaborator is that their own connected GitLab account holds an effective
+membership of that project at Reporter or above, whatever its visibility, since a public project
+can still hold confidential issues and internal notes; job logs and test reports need more (see
+[CI status](#ci-status)).
+
+- **Identity.** A binding pins its project's numeric GitLab id on its first read (read once by
+  path; GitLab answers a moved project's old path with a redirect to its id, which that read
+  follows, as GitHub's does) and reads nothing until it has. From then on every REST request beneath the project
+  goes to `/projects/<id>/...`. Git fetches and pushes, which GitLab addresses only by path, are
+  sent to the path that id has: a push's read afresh, a fetch's from the project read cached for
+  up to 30 seconds. A fetch fails if the path read afresh once GitLab has answered differs from
+  the one it was sent to, and a failed fetch drops the cached project, so a retry goes to the new
+  path. So a rename or transfer keeps the binding on its project, and a project later created at
+  an old path is never served in its place (a fetch may reach it, and its answer is refused) unless
+  the path moves away and back between the path sent and that check. A push is not checked
+  again once GitLab has answered, since what GitLab accepted can't be called back: only a move
+  and the path's reuse both landing between the lookup and the push could deliver it elsewhere.
+  A binding that read before ids were pinned is pinned to the project its path names at its first
+  read since, which may not be the one it read then.
+  Returned issue and merge request references use the current project path from GitLab's web URL,
+  including same-project source and target branches, and comment, diff-thread, queued-item and
+  queued-commit links use the path the pinned project has now; the original binding path remains only the REST
+  rewrite key and the legacy admission requirement.
+- **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
+  and one served from a cache or from queued actions, reports `project/<projectId>` as its
+  subresource, which the Workshop checks collaborators against (see
+  [docs/observers.md](../../docs/observers.md) §10). A job log reports
+  `project/<projectId>/jobTrace/<jobId>` instead, and a test report
+  `project/<projectId>/jobArtifacts/<jobId>` for each job whose reports it holds (the project
+  alone if none), since checking a job ID checks the membership too: the summary names them
+  (`build_ids`), and the failed-tests read, whose report does not, lists the pipeline's jobs with
+  a `junit` report after reading it, retried attempts and same-project child pipelines included,
+  refusing the read if a listing is cut short. The
+  `project/<projectId>/role/developer` and `.../role/maintainer` IDs earlier releases reported
+  read as `project/<projectId>` alone.
+- **Checks.** A collaborator's account is asked `GET /projects/<id>/members/all?user_ids[]=` for
+  its own GitLab user, with its own token: a membership at Reporter or above allows; none, a lower
+  one, an invitation not yet accepted, an expired one, or a project GitLab hides from them denies;
+  anything else fails the check rather than deny. For a job's log, a member's account then reads
+  the job and its `/trace` (a 403 denies); for its artifacts, GraphQL's
+  `job.userPermissions.readJobArtifacts`. A job that is erased or gone allows, since it holds
+  nothing left to withhold. Their account reuses a grant for up to 15 minutes and a denial for up
+  to 15 seconds, so a removed membership can still admit them for 15 minutes; a grant for a job
+  still running is reused only 15 seconds, since its log may yet become a debug trace and its
+  artifacts restricted. It asks afresh after a reconnect, which may sign
+  in as another GitLab user, and reuses nothing once disconnected or once GitLab has confirmed its
+  grant dead: the check fails. Bindings created since subresource reporting (marked
+  `reportsSubresources: true` in their immutable props) have no reads that predate it, so they
+  admit every collaborator without asking GitLab, record none, and have no collaborator cap: the
+  Workshop checks each read's report instead. Older bindings also ask each open, uncached and never
+  with the binding owner's token, for the stored project id when there is one, and for the project
+  their original path names now (read at the project's root first, following a moved project's
+  redirect from that path, as GitHub's name check does), since earlier path-addressed reads may
+  have disclosed a project that later took it. For those older bindings, no stored id means the path is all they are checked
+  by; recorded CI data needs nothing beyond that. Caches filled before conversion are
+  discarded on upgrade. Their legacy history is not exported, so these checks remain.
 
 ## Setting up GitLab OAuth credentials
 
@@ -221,9 +292,10 @@ receives them.
 
 ### "The GitLab project has been renamed or transferred"
 
-The project a connection was bound to has moved. GitLab answers the old path with a redirect that
-the gatekeeper deliberately does not follow (following it would turn writes into reads). Re-bind
-the connection to the project's new path.
+A request beneath a project was answered with a redirect, which is followed only for a read of the
+project itself. The bound project is read by its id once pinned, and the pin and collaborator
+checks follow a moved project's redirect from its old path, so a rename or transfer does not cause
+this on its own; if you see it, report it.
 
 ### "GitLab credentials have expired or been revoked"
 
@@ -273,29 +345,10 @@ even on an `internal` or `public` one: a project can hold confidential issues an
 that only members at those roles see, and the workspace may have read them. The remedy is for a
 project maintainer to add the collaborator as a Reporter (inherited group membership counts).
 
-### "This workspace has read CI job logs or test reports from this GitLab project …"
+### "… cannot be allowed to observe" after the workspace read a job log or a test report
 
-The collaborator is a member below **Developer**, and the workspace has read a job log or a test
-report, which raises the bar from Reporter to Developer (see [CI status](#ci-status)). A project
-maintainer can grant the collaborator Developer; otherwise share a workspace that has not read
-CI job logs or test reports.
+The collaborator is a project member, but GitLab withholds that job's log (it ran with a debug
+trace, which needs **Developer**) or its artifacts (`artifacts:access` restricts them to
+Developers or Maintainers) from them. A project maintainer can grant the role; otherwise share a
+workspace that has not read that job's data.
 
-### "This workspace has read CI test reports from this GitLab project through a connection that may have Maintainer access …"
-
-The connected account is a Maintainer, an instance administrator, or not a project member, so the
-test reports it read may include ones a job keeps from anyone below Maintainer, and the
-collaborator is below Maintainer (see [CI status](#ci-status)).
-A project owner can grant the collaborator Maintainer; otherwise share a workspace whose test
-reports were read through a Developer's connection, or none at all.
-
-### "This GitLab connection was created by an earlier version, so job logs and test reports cannot be read …"
-
-The connection predates this gatekeeper's record of who shares the workspace, so it cannot keep
-a collaborator admitted back then (perhaps at Reporter) out of a job log or test report. Remove
-the GitLab connection from the workspace and add it again; the new one reads them.
-
-### "This binding already answers for 50 collaborators …"
-
-A binding can be shared with at most 50 collaborators at once. Every job-log or test-report read
-checks each of them with GitLab, and the cap keeps that within what one request may fetch. Remove
-a collaborator from the workspace before adding another.

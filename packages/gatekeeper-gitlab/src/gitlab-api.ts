@@ -211,6 +211,8 @@ export type GitLabJobResponse = {
   duration?: number | null;
   web_url: string;
   pipeline: GitLabPipelineBasicResponse;
+  /** The job's artifacts by type: `archive` for `artifacts:paths`, `junit` for a test report, and so on. */
+  artifacts?: Array<{ file_type: string }>;
   commit?: { id: string } | null;
   runner?: { description?: string | null; name?: string | null } | null;
   /** Trigger jobs only: the pipeline it started, null until it has. */
@@ -239,7 +241,8 @@ export type GitLabCommitStatusResponse = {
 /** `GET /projects/:id/pipelines/:pipeline_id/test_report_summary`. */
 export type GitLabTestReportSummaryResponse = {
   total: { count: number; failed: number; skipped: number; error: number };
-  test_suites: Array<{ name: string; total_count: number; failed_count: number; error_count: number }>;
+  /** `build_ids`: the jobs whose reports the summary holds, child pipelines' in the project included. */
+  test_suites: Array<{ name: string; total_count: number; failed_count: number; error_count: number; build_ids: number[] }>;
 };
 
 /** `GET /projects/:id/pipelines/:pipeline_id/test_report`. */
@@ -388,6 +391,11 @@ export type GitLabBranchResponse = {
   commit: { id: string };
 };
 
+/** A protected-branch rule: `name` is a branch name or a wildcard pattern such as `release/*`. */
+export type GitLabProtectedBranchResponse = {
+  name: string;
+};
+
 export type GitLabTagResponse = {
   name: string;
   /** The tag object's sha for annotated tags, the commit's for lightweight ones -- use `commit.id`. */
@@ -414,9 +422,9 @@ export type GitLabCompareResponse = {
  * requires an eligible approver -- so only a 401 from `GET /user`, the one request that asserts
  * nothing but authentication, is classified as one; every other endpoint's 401 is that
  * operation's own answer, for the caller to explain. (A revoked token still surfaces: the next
- * `describe()` or user-id read asks `/user`.) `movedTo` is set when the API answered a 3xx: a
- * renamed or transferred project answers its old path with a `301` to its numeric-id URL, which
- * must never be followed (a followed 301 turns a POST into a GET).
+ * `describe()` or user-id read asks `/user`.) `movedTo` is set when the API answered a 3xx it did
+ * not follow: a renamed or transferred project answers its old path with a `301` to its numeric-id
+ * URL, which is followed only for a GET of the project's root (see redirectTarget).
  */
 export class GitLabApiError extends Error {
   status: number;
@@ -460,6 +468,8 @@ type RequestOptions = {
   timeoutMs?: number;
   headers?: Record<string, string | undefined>;
   okStatuses?: number[];
+  /** The API's root path; REST's `/api/v4` unless given. */
+  root?: "/api/graphql";
 };
 
 export type RequestResult<T> = {
@@ -498,6 +508,27 @@ function encodeBasicAuth(username: string, password: string): string {
  */
 export function encodeProjectPath(pathWithNamespace: string): string {
   return encodeURIComponent(pathWithNamespace);
+}
+
+/**
+ * A project with its numeric GitLab id, which survives renames and transfers and is never reused.
+ * A request beneath `/projects/<encoded path>` is sent beneath `/projects/<id>` instead (see
+ * requestPath): the address GitLab redirects a moved project's old path to, and one no other
+ * project can take over, as a project created at a deleted or moved one's freed path takes over
+ * that path.
+ */
+export type PinnedProject = { path: string; id: number };
+
+/**
+ * Where a request for `path` is sent: with `project`, a path beneath the pinned project's path goes
+ * to the same path beneath its id (see PinnedProject); every other path is sent as given.
+ */
+function requestPath(path: string, project: PinnedProject | undefined): string {
+  if (!project) return path;
+  const prefix = `/projects/${encodeProjectPath(project.path)}`;
+  const suffix = path.slice(prefix.length);
+  return path.startsWith(prefix) && (suffix === "" || suffix.startsWith("/"))
+    ? `/projects/${project.id}${suffix}` : path;
 }
 
 /**
@@ -590,12 +621,12 @@ export function errorMessageFromBody(parsed: unknown, fallback: string): string 
 /**
  * Explain a 3xx from the REST API or the OAuth endpoints, neither of which redirects a request it
  * answers itself. Two unrelated things answer with one: a renamed or transferred project, whose
- * old path 301s to its numeric-id URL under `/api/v4/`, and an access proxy in front of the
- * instance (Cloudflare Access without a valid service token) that 302s every request to a login
- * page. They need opposite remedies, so the message is chosen by the redirect's *path*, not its
- * host: GitLab builds the rename's Location from its configured external URL -- the
- * browser-facing host -- which differs from the host the Worker requested whenever the instance
- * is reached through a separate Access hostname.
+ * old path 301s to its numeric-id URL under `/api/v4/` (followed only for the project's root, see
+ * redirectTarget), and an access proxy in front of the instance (Cloudflare Access without a valid
+ * service token) that 302s every request to a login page. They need opposite remedies, so the
+ * message is chosen by the redirect's *path*, not its host: GitLab builds the rename's Location
+ * from its configured external URL -- the browser-facing host -- which differs from the host the
+ * Worker requested whenever the instance is reached through a separate Access hostname.
  */
 function redirectMessage(requested: URL, location: string | undefined): string {
   let target: URL | undefined;
@@ -631,6 +662,29 @@ function appendQuery(url: URL, query: Query | undefined): void {
   }
 }
 
+/** A request for a project's root by its path, the one request whose rename redirect is followed. */
+const PROJECT_PATH_ROOT = /^\/projects\/[^/]*[^/\d][^/]*$/;
+/** Where GitLab redirects a moved project's old path: the project's root by its numeric id. */
+const PROJECT_ID_ROOT = /^\/api\/v4\/projects\/\d+$/;
+
+/**
+ * The URL to re-issue a redirected request to, built rather than taken from the Location, or
+ * undefined to refuse the redirect. As the GitHub gatekeeper does for a repository, only a GET of
+ * a project's root by path is followed, and only to a project's root by id: GitLab redirects a
+ * renamed or transferred project's freed path there, and at the root the id can only be that same
+ * project's. The Location names GitLab's browser-facing host (see redirectMessage), so the id path
+ * is re-issued to the API origin. A request by id is addressed by it already, and nothing beneath
+ * a project is followed.
+ */
+function redirectTarget(method: string, path: string, requested: URL, response: Response, instance: GitLabInstance):
+    URL | undefined {
+  if (response.status < 300 || response.status >= 400 || method !== "GET" || !PROJECT_PATH_ROOT.test(path)) return undefined;
+  const location = response.headers.get("location");
+  const moved = location === null ? null : URL.parse(location, requested.href);
+  return moved !== null && PROJECT_ID_ROOT.test(moved.pathname)
+    ? new URL(`${moved.pathname}${requested.search}`, instance.apiOrigin) : undefined;
+}
+
 /**
  * Send one request to the API: the instance's headers and the bearer token attached, the
  * documented redirect behaviour applied (see `redirectMessage`), and any status the caller did not
@@ -646,7 +700,7 @@ async function send(
   options: RequestOptions & { accept?: string },
   credentials?: GitLabCredentialSource,
 ): Promise<Response> {
-  const url = new URL(`/api/v4${path}`, instance.apiOrigin);
+  const url = new URL(`${options.root ?? "/api/v4"}${path}`, instance.apiOrigin);
   appendQuery(url, options.query);
 
   const headers = new Headers({ "User-Agent": USER_AGENT, ...instance.headers });
@@ -662,19 +716,25 @@ async function send(
     body = JSON.stringify(options.body);
   }
 
-  const response = await fetch(url.toString(), {
+  const attempt = async (target: URL) => await fetch(target.toString(), {
     method,
     headers,
     body,
-    // Never follow: a renamed project's 301 points at its numeric-id URL, and following it would
-    // silently turn a POST into a GET. Surfaced as a "project moved" error instead.
+    // Never followed automatically: a followed 301 turns a POST into a GET, and a redirect beneath
+    // a project could lead into another one. See redirectTarget for the one that is re-issued.
     redirect: "manual",
     signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
   }).catch((error: unknown) => {
     throw transportError(error);
   });
 
-  await throwOnRedirect(response, url);
+  let response = await attempt(url);
+  const moved = redirectTarget(method, path, url, response, instance);
+  if (moved !== undefined) {
+    await response.body?.cancel().catch(() => {});
+    response = await attempt(moved);
+  }
+  await throwOnRedirect(response, moved ?? url);
 
   if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
     const parsed = await parseErrorBody(response);
@@ -850,21 +910,33 @@ export async function revokeToken(
 // ---------------------------------------------------------------------------
 // REST client
 
+/**
+ * GitLab's REST API as one account. With `project`, a request beneath its path is sent by its id
+ * (see PinnedProject). Only a GET of a project's root by path may follow one redirect to a
+ * project root by id, re-issued to the configured API origin (see `redirectTarget`). All other
+ * redirects are refused (see `redirectMessage`).
+ */
 export class GitLabApi {
   #instance: GitLabInstance;
   #credentials: GitLabCredentialSource;
+  #project: PinnedProject | undefined;
 
-  constructor(instance: GitLabInstance, credentials: GitLabCredentialSource) {
+  constructor(instance: GitLabInstance, credentials: GitLabCredentialSource, project?: PinnedProject) {
     this.#instance = instance;
     this.#credentials = credentials;
+    this.#project = project;
   }
 
   get instance(): GitLabInstance {
     return this.#instance;
   }
 
+  async #send(method: string, path: string, options: RequestOptions & { accept?: string }): Promise<Response> {
+    return await send(this.#instance, method, requestPath(path, this.#project), options, this.#credentials);
+  }
+
   async #request<T>(method: string, path: string, options: RequestOptions = {}): Promise<RequestResult<T>> {
-    return await request<T>(this.#instance, method, path, options, this.#credentials);
+    return await request<T>(this.#instance, method, requestPath(path, this.#project), options, this.#credentials);
   }
 
   async #get<T>(path: string, query?: Query): Promise<T> {
@@ -898,6 +970,14 @@ export class GitLabApi {
     return await this.#get<GitLabSimpleUser[]>("/users", { username });
   }
 
+  /**
+   * Whether a user is a bot, a service account included -- `GET /users/:id`, whose `bot` field the
+   * username listing leaves out for anyone but an administrator. Absent reads as a bot.
+   */
+  async isBotUser(id: number): Promise<boolean> {
+    return (await this.#get<{ bot?: boolean }>(`/users/${id}`)).bot !== false;
+  }
+
   // -- projects
 
   async getProject(projectPath: string): Promise<GitLabProjectResponse> {
@@ -922,9 +1002,10 @@ export class GitLabApi {
    * `membership_state` but the user's effective `access_level` (from `project_authorizations`).
    * The highest is taken anyway, should a version return several.
    */
-  async getProjectMember(projectPath: string, userId: number): Promise<GitLabMemberResponse | null> {
+  async getProjectMember(project: number | string, userId: number): Promise<GitLabMemberResponse | null> {
     const rows = await this.#get<GitLabMemberResponse[]>(
-      `/projects/${encodeProjectPath(projectPath)}/members/all`, { user_ids: [userId], per_page: 100 });
+      `/projects/${typeof project === "number" ? project : encodeProjectPath(project)}/members/all`,
+      { user_ids: [userId], per_page: 100 });
     let best: GitLabMemberResponse | null = null;
     for (const row of rows) {
       if (row.id === userId && (best === null || row.access_level > best.access_level)) best = row;
@@ -1210,6 +1291,12 @@ export class GitLabApi {
       { search: options.search }, options.page, options.perPage);
   }
 
+  /** One page of the project's protected-branch rules, wildcard patterns included. */
+  async listProtectedBranches(projectPath: string, page: number, perPage: number): Promise<GitLabPage<GitLabProtectedBranchResponse>> {
+    return await this.#getPage<GitLabProtectedBranchResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/protected_branches`, {}, page, perPage);
+  }
+
   async listTags(projectPath: string, page: number, perPage: number): Promise<GitLabPage<GitLabTagResponse>> {
     return await this.#getPage<GitLabTagResponse>(
       `/projects/${encodeProjectPath(projectPath)}/repository/tags`, {}, page, perPage);
@@ -1278,9 +1365,9 @@ export class GitLabApi {
    * blobs over 10 MB to 5 requests a minute.
    */
   async getBlob(projectPath: string, sha: string, maxBytes: number): Promise<Uint8Array | "oversized" | null> {
-    const response = await send(this.#instance, "GET",
+    const response = await this.#send("GET",
       `/projects/${encodeProjectPath(projectPath)}/repository/blobs/${encodeURIComponent(sha)}/raw`,
-      { okStatuses: [404] }, this.#credentials);
+      { okStatuses: [404] });
     if (response.status === 404) {
       await response.body?.cancel().catch(() => {});
       return null;
@@ -1298,9 +1385,9 @@ export class GitLabApi {
    * file's metadata headers (200) or 404, never its content.
    */
   async fileExists(projectPath: string, filePath: string, ref: string): Promise<boolean> {
-    const response = await send(this.#instance, "HEAD",
+    const response = await this.#send("HEAD",
       `/projects/${encodeProjectPath(projectPath)}/repository/files/${encodeURIComponent(filePath)}`,
-      { query: { ref }, okStatuses: [404] }, this.#credentials);
+      { query: { ref }, okStatuses: [404] });
     await response.body?.cancel().catch(() => {});
     return response.status !== 404;
   }
@@ -1361,26 +1448,30 @@ export class GitLabApi {
       `/projects/${encodeProjectPath(projectPath)}/events`, { action: "pushed" }, page, perPage);
   }
 
-  /** One page of a pipeline's jobs (not trigger jobs), newest first, latest attempts only. */
-  async listPipelineJobs(projectPath: string, pipelineId: number, page: number, perPage: number):
-      Promise<GitLabPage<GitLabJobResponse>> {
-    return await this.#getPage<GitLabJobResponse>(
-      `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/jobs`, {}, page, perPage);
+  /**
+   * One page of a pipeline's jobs (not trigger jobs), newest first, latest attempts only unless
+   * `includeRetried`.
+   */
+  async listPipelineJobs(projectPath: string, pipelineId: number, page: number, perPage: number,
+                         options: { includeRetried?: true } = {}): Promise<GitLabPage<GitLabJobResponse>> {
+    return await this.#getPage<GitLabJobResponse>(`/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/jobs`,
+      { include_retried: options.includeRetried }, page, perPage);
   }
 
   /**
-   * One page of a pipeline's trigger jobs, latest attempts only. GitLab 19.2 renamed the route from
-   * `bridges` to `trigger_jobs` and deprecated the old name; the caller picks by version
-   * (`supportsTriggerJobsRoute`).
+   * One page of a pipeline's trigger jobs, latest attempts only unless `includeRetried`. GitLab 19.2
+   * renamed the route from `bridges` to `trigger_jobs` and deprecated the old name; the caller picks
+   * by version (`supportsTriggerJobsRoute`).
    */
   async listPipelineTriggerJobs(projectPath: string, pipelineId: number, options: {
     route: "trigger_jobs" | "bridges";
     page: number;
     perPage: number;
+    includeRetried?: true;
   }): Promise<GitLabPage<GitLabJobResponse>> {
     return await this.#getPage<GitLabJobResponse>(
       `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/${options.route}`,
-      {}, options.page, options.perPage);
+      { include_retried: options.includeRetried }, options.page, options.perPage);
   }
 
   /**
@@ -1413,9 +1504,9 @@ export class GitLabApi {
    * not found or no log file"). An archived log is streamed through Workhorse, not redirected.
    */
   async getJobTrace(projectPath: string, jobId: number): Promise<ReadableStream<Uint8Array> | null> {
-    const response = await send(this.#instance, "GET",
+    const response = await this.#send("GET",
       `/projects/${encodeProjectPath(projectPath)}/jobs/${jobId}/trace`,
-      { okStatuses: [404], timeoutMs: LOG_TIMEOUT_MS }, this.#credentials);
+      { okStatuses: [404], timeoutMs: LOG_TIMEOUT_MS });
     if (response.status === 404) {
       await response.body?.cancel().catch(() => {});
       return null;
@@ -1432,6 +1523,31 @@ export class GitLabApi {
   async getPipelineTestReport(projectPath: string, pipelineId: number): Promise<GitLabTestReportResponse> {
     return await this.#get<GitLabTestReportResponse>(
       `/projects/${encodeProjectPath(projectPath)}/pipelines/${pipelineId}/test_report`);
+  }
+
+  /**
+   * Whether this account may read job `jobId`'s artifacts, test reports included: GitLab's
+   * `read_job_artifacts`, which applies the job's `artifacts:access` and which REST does not
+   * report, so it is asked through GraphQL. `null` when there is nothing left to read: the job is
+   * erased or gone, or not in the project this account sees by `projectId`.
+   */
+  async jobArtifactsReadable(projectId: number, jobId: number): Promise<boolean | null> {
+    type Answer = {
+      data?: { projects?: { nodes: Array<{ job: { erasedAt: string | null; userPermissions: { readJobArtifacts: boolean } } | null }> } };
+      errors?: Array<{ message?: string }>;
+    };
+    const { data } = await this.#request<Answer>("POST", "", {
+      root: "/api/graphql",
+      body: {
+        query: "query($project: [ID!], $job: JobID!) { projects(ids: $project) { nodes { " +
+          "job(id: $job) { erasedAt userPermissions { readJobArtifacts } } } } }",
+        variables: { project: [`gid://gitlab/Project/${projectId}`], job: `gid://gitlab/Ci::Build/${jobId}` },
+      },
+    });
+    // GitLab's error text is a response body, kept out of errors that are logged and shown.
+    if (data.errors?.length || !data.data?.projects) throw new GitLabApiError(502, "GitLab GraphQL failed.");
+    const job = data.data.projects.nodes[0]?.job;
+    return job == null || job.erasedAt !== null ? null : job.userPermissions.readJobArtifacts;
   }
 
   // -- git smart-HTTP
