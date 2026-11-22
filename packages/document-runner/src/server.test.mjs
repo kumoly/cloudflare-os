@@ -31,7 +31,9 @@ async function fixture(t, options = {}) {
   }
   async function status(id) { return (await request(`/v1/scopes/${scope}/jobs/${id}`)).json(); }
   async function done(id) {
-    for (let i = 0; i < 600; i++) {
+    // Real OCR can take several seconds on a shared runner. Bound elapsed time, not poll count.
+    const deadline = performance.now() + 30_000;
+    while (performance.now() < deadline) {
       const job = await status(id);
       if (["succeeded", "failed", "cancelled"].includes(job.status)) {
         assert.equal(job.result, undefined, "Polling status must not carry document content");
